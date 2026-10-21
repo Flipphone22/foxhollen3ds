@@ -1,0 +1,43 @@
+; Immutable field-space mesh: v0.xy=float UV, v1.xy=signed Q8 offsets.
+; The owner supplies inverse source UV rows and verified displacement routing.
+; No source-channel convention is encoded here; integration must prove it.
+.fvec inverse_x, inverse_y, displacement_x, displacement_y, radial, viewport, extent
+.constf common(0.0,1.0,0.00390625,-0.5)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0
+.out outdepth texcoord1
+.out outradial texcoord2
+.proc main
+    mov r0.xy, v0
+    add r6.xy, -extent.z, r0
+    mov r6.z, common.x
+    dp3 r7.x, r6, r6
+    slt r7.x, extent.y, r7.x
+    mul r7.x, extent.x, r7.x
+    mad r0.xy, r6, r7.x, r0
+    mov r0.z, common.y
+    dp3 r1.x, inverse_x, r0
+    dp3 r1.y, inverse_y, r0
+    mul r2.xy, common.z, v1
+    mov r2.z, common.x
+    dp3 r3.x, displacement_x, r2
+    dp3 r3.y, displacement_y, r2
+    add r3.xy, r1, r3
+    mov outuv.x, r3.x
+    add outuv.y, common.y, -r3.y
+    mov outuv.zw, common.xxxy
+    mov outdepth.x, r1.x
+    add outdepth.y, common.y, -r1.y
+    mov outdepth.zw, common.xxxy
+    mul r4.xy, radial.xy, r1
+    add r4.xy, radial.zw, r4
+    mov outradial.xy, r4
+    mov outradial.zw, common.xxxy
+    mul r5.xy, viewport.xy, r1.yx
+    add outpos.xy, viewport.zw, r5
+    mov outpos.z, common.w
+    mov outpos.w, common.y
+    mov outcolor, common.y
+    end
+.end

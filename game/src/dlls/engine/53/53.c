@@ -1,3 +1,12 @@
+#include "main/texture.h"
+#include "fh_pica_hud.h"
+static void *fh_pica_hud_asset(int id){
+    void *texture=textureLoadAsset(id);fh_pica_game_hud_loaded(texture);return texture;
+}
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
 #include "dlls/object_descriptor.h"
 #include "main/audio/sfx_trigger_ids.h"
 #include "main/dll/FRONT/frontend_control.h"
@@ -897,7 +906,7 @@ void SaveSelectScreen_initialise(void)
 
     saveFileSelect_saveSlotsBase = mmAlloc(sizeof(FrontendSaveSlot) * FRONTEND_SAVE_SLOT_COUNT, 5, 0);
     lbl_803DD6AC = mmAlloc(sizeof(FrontendSaveSlot) * FRONTEND_SAVE_SLOT_COUNT, 5, 0);
-    gSaveSelectTexture = textureLoadAsset(SAVESELECTSCREEN_TEXTURE_ID);
+    gSaveSelectTexture = fh_pica_hud_asset(SAVESELECTSCREEN_TEXTURE_ID);
     gameTextLoadDir(0x15);
 
     if (gSaveSelectCachedText == 0)
@@ -907,7 +916,7 @@ void SaveSelectScreen_initialise(void)
 
     for (i = 0; i < 4; i++)
     {
-        gSaveSelectTextures[i] = textureLoadAsset(gSaveSelectTextureIds[i]);
+        gSaveSelectTextures[i] = fh_pica_hud_asset(gSaveSelectTextureIds[i]);
     }
 
     if (getPrevUiDll() != 6)

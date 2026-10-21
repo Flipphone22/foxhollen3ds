@@ -4,12 +4,13 @@
 s16 salPCDecodeNibble(u8 nibble, u8 ps, const s16 coefficients[8][2], s16 *yn1, s16 *yn2) {
   s32 value = (nibble & 8) ? (s32)(nibble & 15) - 16 : (nibble & 15);
   u32 predictor = (ps >> 4) & 7;
-  s64 sum = (s64)value * (1u << (ps & 15)) * 2048 + 1024;
+  _Static_assert((-1 >> 1) == -1, "Native ADPCM requires arithmetic signed shift");
+  s64 sum = value * (s32)(1u << (ps & 15)) * 2048 + 1024;
   if (coefficients)
     sum += (s64)coefficients[predictor][0] * *yn1 + (s64)coefficients[predictor][1] * *yn2;
   /* Arithmetic floor is explicit, including on hosts with a logical signed shift. */
-  sum = sum < 0 ? -((-sum + 2047) / 2048) : sum / 2048;
-  s16 result = sum < -32768 ? -32768 : sum > 32767 ? 32767 : (s16)sum;
+  s32 scaled = (s32)(sum >> 11);
+  s16 result = scaled < -32768 ? -32768 : scaled > 32767 ? 32767 : (s16)scaled;
   *yn2 = *yn1;
   *yn1 = result;
   return result;
@@ -54,7 +55,7 @@ bool salPCInitReader(MusyPCMReader *reader, const SAMPLE_INFO *sample) {
   return true;
 }
 
-s16 salPCReadSample(MusyPCMReader *reader, const SAMPLE_INFO *sample, u8 streamLoopPS) {
+__attribute__((always_inline)) s16 salPCReadSample(MusyPCMReader *reader, const SAMPLE_INFO *sample, u8 streamLoopPS) {
   if (reader->ended)
     return 0;
   const DSPADPCMplusInfo *adpcm = sample->extraData;

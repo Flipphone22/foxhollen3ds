@@ -1,3 +1,15 @@
+#include "main/texture.h"
+#include "fh_pica_hud.h"
+static void *fh_pica_hud_asset(int id){
+    void *texture=textureLoadAsset(id);fh_pica_game_hud_loaded(texture);return texture;
+}
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 /*
  * DLL 704 (0x2C0) - the title/attract-mode front-end object and its
  * UI. gTitleScreenObjDescriptor drives the title-screen actor: init
@@ -474,28 +486,25 @@ void titleScreenPositionElements(f32 a, f32 b)
 }
 
 
+
+static void fh_pica_title_text(int x0,int y0,int x1,int y1,float u0,float v0,float u1,float v1) {
+    if(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_HUD))return;
+    unsigned scissor[4];GXGetScissor(scissor,scissor+1,scissor+2,scissor+3);
+    float rect[4]={(s16)x0,(s16)y0,(s16)x1,(s16)y1},uv[4]={u0,v0,u1,v1};
+    fh_pica_hud_projected(fh_pica_hud_text_page,(const float(*)[4])hudMatrix,
+        (const float(*)[4])gTitleScreenMtx,rect,-32,uv,fh_minimal_text_color,
+        fh_pica_hud_text_alpha_only,0,scissor);
+
+}
+
 void nameEntryTextDrawFunc(int x0, int y0, int x1, int y1, f32 u0, f32 v0, f32 u1, f32 v1)
 {
-    GXLoadPosMtxImm((MtxPtr)gTitleScreenMtx, GX_PNMTX0);
-    GXSetCurrentMtx(GX_PNMTX0);
-    GXSetProjection(hudMatrix, GX_ORTHOGRAPHIC);
-    GXClearVtxDesc();
-    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
-    GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
-    GXSetCullMode(GX_CULL_NONE);
-    GXSetScissor((int)((u32) ((MtxPtr)gTitleScreenMtx)[0][3] + 0x39),
-                 (int)((u32) ((MtxPtr)gTitleScreenMtx)[1][3] + 0x4e), 0x104, 0x16);
-    GXBegin(GX_QUADS, GX_VTXFMT1, 4);
-    GXPosition3s16((s16)(x0 - *(u32*)&gNameEntryScrollX * 4 + 0x208), y0, -0x20);
-    GXTexCoord2f32(u0, v0);
-    GXPosition3s16((s16)(x1 - *(u32*)&gNameEntryScrollX * 4 + 0x208), y0, -0x20);
-    GXTexCoord2f32(u1, v0);
-    GXPosition3s16((s16)(x1 - *(u32*)&gNameEntryScrollX * 4 + 0x208), y1, -0x20);
-    GXTexCoord2f32(u1, v1);
-    GXPosition3s16((s16)(x0 - *(u32*)&gNameEntryScrollX * 4 + 0x208), y1, -0x20);
-    GXTexCoord2f32(u0, v1);
-    GXSetScissor(0, 0, 0x280, 0x1e0);
-    Camera_RebuildProjectionMatrix();
+    GXSetScissor((int)((u32)((MtxPtr)gTitleScreenMtx)[0][3]+0x39),
+        (int)((u32)((MtxPtr)gTitleScreenMtx)[1][3]+0x4e),0x104,0x16);
+    u32 offset=0x208-*(u32*)&gNameEntryScrollX*4;
+    fh_pica_title_text((u32)x0+offset,y0,(u32)x1+offset,y1,u0,v0,u1,v1);
+    GXSetScissor(0,0,0x280,0x1e0);Camera_RebuildProjectionMatrix();
+
 }
 
 
@@ -504,23 +513,9 @@ void nameEntryTextDrawFunc(int x0, int y0, int x1, int y1, f32 u0, f32 v0, f32 u
 
 void titleScreenTextDrawFunc(int x0, int y0, int x1, int y1, f32 u0, f32 v0, f32 u1, f32 v1)
 {
-    GXLoadPosMtxImm((MtxPtr)gTitleScreenMtx, GX_PNMTX0);
-    GXSetCurrentMtx(GX_PNMTX0);
-    GXSetProjection(hudMatrix, GX_ORTHOGRAPHIC);
-    GXClearVtxDesc();
-    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
-    GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
-    GXSetCullMode(GX_CULL_NONE);
-    GXBegin(GX_QUADS, GX_VTXFMT1, 4);
-    GXPosition3s16(x0, y0, -0x20);
-    GXTexCoord2f32(u0, v0);
-    GXPosition3s16(x1, y0, -0x20);
-    GXTexCoord2f32(u1, v0);
-    GXPosition3s16(x1, y1, -0x20);
-    GXTexCoord2f32(u1, v1);
-    GXPosition3s16(x0, y1, -0x20);
-    GXTexCoord2f32(u0, v1);
+    fh_pica_title_text(x0,y0,x1,y1,u0,v0,u1,v1);
     Camera_RebuildProjectionMatrix();
+
 }
 
 int TitleScreen_getExtraSize(void)
@@ -994,18 +989,18 @@ void TitleScreen_initialise(void)
     gTitleScreenMenuActive = 0;
     if (gGameTextFontIsSjis != 0)
     {
-        gTitleScreenMainTex = textureLoadAsset(FRONT_MAIN_TEXTURE_ID_A);
+        gTitleScreenMainTex = fh_pica_hud_asset(FRONT_MAIN_TEXTURE_ID_A);
     }
     else
     {
-        gTitleScreenMainTex = textureLoadAsset(FRONT_MAIN_TEXTURE_ID_B);
+        gTitleScreenMainTex = fh_pica_hud_asset(FRONT_MAIN_TEXTURE_ID_B);
     }
     lbl_803DD9D0 = 1.0f;
     lbl_803DD9CC = 1.0f;
     PSMTXIdentity((MtxPtr)gTitleScreenMtx);
     for (i = 0; i < TITLE_SCREEN_TEXTURE_COUNT; i++)
     {
-        gTitleScreenTextures[i] = textureLoadAsset(gTitleScreenTextureIds[i]);
+        gTitleScreenTextures[i] = fh_pica_hud_asset(gTitleScreenTextureIds[i]);
     }
     gTitleScreenPulseTimer = 0.0f;
     gTitleScreenSetupDone = 0;

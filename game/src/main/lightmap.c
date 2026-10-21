@@ -1,3 +1,13 @@
+#include "fh_pica_heat.h"
+#include "track/intersect_internal.h"
+#include "fh_pica_blur_filter.h"
+#include "fh_pica_glow.h"
+#include "fh_pica_motion_blur.h"
+#include "fh_pica_cloud.h"
+#include "fh_pica_scene.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "game/objects/object.h"
 #include "main/dll/player.h"
 #include "main/frame_timing.h"
@@ -372,9 +382,9 @@ void getVisibleObjects(s8* opacity) {
                     (o->anim.modelState->flags & OBJ_MODEL_STATE_SHADOW_VISIBLE) != 0) {
                     t = o->anim.modelInstance->shadowType;
                     if (t == 2 || t == 1) {
-                        queueObjectShadow(o);
+                        if (!fh_render_budget_strip) queueObjectShadow(o);
                     } else if (t == 4) {
-                        renderObjectShadowTexture(o);
+                        if (!fh_render_budget_strip) renderObjectShadowTexture(o);
                     }
                 }
                 if (gVisibleObjectSortKeyCount < 1000) {
@@ -430,7 +440,7 @@ void getVisibleObjects(s8* opacity) {
     if (gVisibleObjectSortKeyCount > 1) {
         sortVisibleObjectKeysDescending(gVisibleObjectSortKeys, gVisibleObjectSortKeyCount);
     }
-    renderShadows(0, 0, 0);
+    if (!fh_render_budget_strip) renderShadows(0, 0, 0);
 }
 
 static void renderObjects(s8* opacity) {
@@ -463,7 +473,7 @@ static void renderObjects(s8* opacity) {
             }
             objRender(0, 0, 0, 0, (GameObject*)obj, 1);
             p = (int*)obj->anim.modelState;
-            if (p != NULL && obj->anim.modelState->shadowCastSlot != NULL) {
+            if (!fh_pica_scene_actors && p != NULL && obj->anim.modelState->shadowCastSlot != NULL) {
                 LightmapQEnt* qe;
                 int qi;
                 u32 shadowKind;
@@ -474,7 +484,7 @@ static void renderObjects(s8* opacity) {
                 qe = &q[qi];
                 qe->d = shadowKind;
                 gLightmapDrawQueueCount = qi + 1;
-            } else if (obj->anim.modelInstance->shadowType == OBJ_SHADOW_TYPE_CRASH &&
+            } else if ((obj->anim.modelInstance->shadowType == OBJ_SHADOW_TYPE_CRASH || (fh_pica_scene_actors && (obj->anim.modelInstance->shadowType == OBJ_SHADOW_TYPE_BIG_BOX || obj->anim.modelInstance->shadowType == OBJ_SHADOW_TYPE_MODEL_GEOMETRIC))) &&
                        (obj->anim.flags & OBJANIM_FLAG_HIDDEN) == 0 &&
                        (obj->anim.modelState->flags & OBJ_MODEL_STATE_SHADOW_VISIBLE)) {
                 LightmapQEnt* qe;
@@ -616,11 +626,11 @@ void sceneDraw(void) {
     gVisibleObjectSortKeyCount = 1;
     lbl_803DCEAC = 0;
     gGlowLightCount = 0;
-    drawReflectionTexture();
+    if (!fh_render_budget_strip) drawReflectionTexture();
     gLightmapDrawQueueCount = 0;
     getVisibleObjects(buf);
-    Rcp_UpdateDistortionTextures();
-    pauseMenuRenderSlotShadow();
+    if (fh_pica_scene_actors && FH_PICA_ACTOR_LIGHTING_EXPERIMENT) fh_pica_game_environment(); else if (!fh_render_budget_strip) Rcp_UpdateDistortionTextures();
+    if (!fh_render_budget_strip) pauseMenuRenderSlotShadow();
     GXPixModeSync();
     Camera_UpdateProjection(NULL, 0);
     Camera_UpdateViewMatrices();
@@ -631,18 +641,18 @@ void sceneDraw(void) {
     }
     flag = t;
     if ((renderFlags & RENDERFLAG_OVERCAST) != 0) {
-        (*gSkyInterface)->renderTimeOfDayBackdrop(0, 0);
+        if (fh_pica_scene_actors) (*gSkyInterface)->renderTimeOfDayBackdrop(0, 0);
         if (flag != 0) {
-            drawSkyStars();
+            if (fh_pica_scene_actors) drawSkyStars();
         }
-        (*gSkyInterface)->render(0, 0, 0, 0, flag);
+        if (fh_pica_scene_actors) fh_pica_game_sky_update(flag);
         if ((renderFlags & RENDERFLAG_DRAW_CLOUDS) != 0) {
-            (*gCloudActionInterface)->renderClouds(0, 0, 0, 0);
+            if (fh_pica_scene_actors) (*gCloudActionInterface)->renderClouds(0, 0, 0, 0);
         }
     } else {
-        (*gSkyInterface)->render(0, 0, 0, 0, flag);
-        (*gCloudActionInterface)->renderClouds(0, 0, 0, 0);
-        drawSkyStars();
+        if (fh_pica_scene_actors) fh_pica_game_sky_update(flag);
+        if (fh_pica_scene_actors) (*gCloudActionInterface)->renderClouds(0, 0, 0, 0);
+        if (fh_pica_scene_actors) drawSkyStars();
     }
     if (gLightmapScreenImageEnabled != 0) {
         screenImageDraw(gLightmapScreenImageEnabled);
@@ -659,17 +669,38 @@ void sceneDraw(void) {
     renderSceneGeometry(0, gMapBlockDrawOrderFrontToBack);
     objRenderInvalidateStateCache();
     renderObjects(buf);
+    if (fh_render_budget_strip) {
+        fh_pica_motion_blur_step(gMotionBlurAmount,
+            CameraShake_IsActive() != 0 || (int)bEnableMotionBlur != 0,
+            getHudHiddenFrameCount() == 0);
+        if(getHudHiddenFrameCount() == 0)fh_pica_glow_reflection_capture();
+    } else {
     if (CameraShake_IsActive() != 0 || (int)bEnableMotionBlur != 0) {
-        renderMotionBlur(gMotionBlurAmount);
+        if (!fh_render_budget_strip) renderMotionBlur(gMotionBlurAmount);
     }
     if (getHudHiddenFrameCount() == 0) {
-        updateReflectionTextures();
+        if (!fh_render_budget_strip) updateReflectionTextures();
+    }
     }
     if (bEnableBlurFilter != 0) {
-        doBlurFilter(blurFilterX, blurFilterY, blurFilterZ, bBlurFilterUseArea, bBiggerBlurFilter);
+        if (fh_render_budget_strip) {
+            if (fh_pica_blur_filter_enabled()) {
+                float px,py,pz,pw;
+                Camera_ProjectWorldPoint(blurFilterX-playerMapOffsetX,blurFilterY,
+                    blurFilterZ-playerMapOffsetZ,&px,&py,&pz,&pw);
+                fh_pica_blur_filter(pz,bBlurFilterUseArea,bBiggerBlurFilter);
+            }
+        } else {
+        if (!fh_render_budget_strip) doBlurFilter(blurFilterX, blurFilterY, blurFilterZ, bBlurFilterUseArea, bBiggerBlurFilter);
+        }
     }
     if (heatEffectIntensity != 0) {
-        doHeatEffect(heatEffectIntensity & 0xff);
+        if (fh_pica_heat_enabled()) {
+            float sx,sy;
+            newshadows_getReflectionScrollOffsets(&sx,&sy);
+            fh_pica_heat(sx,sy,(s16)Camera_GetCurrentViewPitch(),heatEffectIntensity & 0xff,
+                gHeatEffectKColor.a,(const float(*)[4])hudMatrix);
+        }
     }
     i = 0;
     deferred = sLightmapDeferredObjects;
@@ -711,7 +742,8 @@ void sceneDraw(void) {
     staffDrawQuakeSpellRing();
     (*gNewCloudsInterface)->renderSnowClouds(0);
     if (bEnableDistortionFilter != 0) {
-        updateReflectionTextures();
+        if (!fh_render_budget_strip) updateReflectionTextures();
+        if (fh_render_budget_strip) fh_pica_glow_reflection_capture();
         doDistortionFilter(distortionFilterVector, distortionFilterAngle2, distortionFilterColor,
                            distortionFilterAngle1);
     }

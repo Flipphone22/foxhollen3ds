@@ -1,0 +1,67 @@
+; Resident source-wave basis and live rotations. No vertex texture fetch or CPU
+; mesh update. Analytic caustic approximation is separately bounded in pixels.
+.fvec decode, phase, offset_x, offset_y, alpha, viewport
+.constf common(0.0,1.0,2.0,0.5)
+.constf sinpoly(-0.1666666666666667,0.008333333333333333,-0.0001984126984126984,127.0)
+.constf cospoly(-0.5,0.04166666666666667,-0.001388888888888889,0.0000248015873015873)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0
+.out outdepth texcoord1
+.proc main
+    mul r11.xy, decode, v0
+    mul r0, decode.z, v1
+    mul r1.x, phase.x, r0.y
+    mul r12.x, phase.y, r0.x
+    add r1.x, r1.x, -r12.x
+    mul r1.y, phase.z, r0.w
+    mul r12.x, phase.w, r0.z
+    add r1.y, r1.y, -r12.x
+    mul r1.z, phase.x, r0.x
+    mul r12.x, phase.y, r0.y
+    add r1.z, r1.z, r12.x
+    mul r1.w, phase.z, r0.z
+    mul r12.x, phase.w, r0.w
+    add r1.w, r1.w, r12.x
+    ; r1=(cos(row),cos(col),sin(row),sin(col))
+    mul r2.x, common.w, r1.w
+    mul r2.y, r2.x, r2.x
+    mul r3.x, sinpoly.z, r2.y
+    add r3.x, sinpoly.y, r3.x
+    mul r3.x, r3.x, r2.y
+    add r3.x, sinpoly.x, r3.x
+    mul r3.x, r3.x, r2.y
+    add r3.x, common.y, r3.x
+    mul r3.x, r3.x, r2.x
+    mul r3.y, cospoly.w, r2.y
+    add r3.y, cospoly.z, r3.y
+    mul r3.y, r3.y, r2.y
+    add r3.y, cospoly.y, r3.y
+    mul r3.y, r3.y, r2.y
+    add r3.y, cospoly.x, r3.y
+    mul r3.y, r3.y, r2.y
+    add r3.y, common.y, r3.y
+    mul r4.x, r1.x, r3.y
+    mad r4.x, -r1.z, r3.x, r4.x
+    mul r4.y, sinpoly.w, r4.x
+    mul r4.x, r4.y, r1.y
+    add r4.xy, -common.y, r4
+    mov r4.zw, common.xxxy
+    dp3 r5.x, offset_x, r4
+    dp3 r5.y, offset_y, r4
+    add r5.xy, r11, r5
+    mov outuv.x, r5.x
+    add outuv.y, common.y, -r5.y
+    mov outuv.zw, common.xxxy
+    mov outdepth.x, r11.x
+    add outdepth.y, common.y, -r11.y
+    mov outdepth.zw, common.xxxy
+    mov outcolor.xyz, common.y
+    mul r5.w, alpha.y, r11.y
+    add outcolor.w, alpha.x, r5.w
+    mul r5.xy, viewport.xy, r11.yx
+    add outpos.xy, viewport.zw, r5
+    mov outpos.z, decode.w
+    mov outpos.w, common.y
+    end
+.end

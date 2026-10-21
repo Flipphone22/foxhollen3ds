@@ -1,0 +1,257 @@
+; One resident program for native world + actor draws: no per-draw code upload.
+; c0..9 retain world/material ABI. c10..75: 22 world-space bone rows.
+; c76: position/color/weight decode and root-scale normal decode.
+; c77 ambient; c78..85 light positions; c86..93 colors; c94 constants.
+.fvec view[3], projection[4], tint, uvscale[2], bones[66], decode
+.fvec ambient, light_position[8], light_color[8]
+.fvec fog_distance_scale
+.constf constants(0.0,1.0,0.000000001,0.5)
+.bool actor
+.bool actor_second_uv
+.bool actor_lighting
+.bool actor_vertex_material
+.bool light0
+.bool light1
+.bool light2
+.bool light3
+.bool light4
+.bool light5
+.bool light6
+.bool light7
+.bool actor_environment
+.bool actor_alpha_lighting
+.bool actor_fur
+.bool actor_specular
+.out outpos position
+.out outcolor color
+.out outuv texcoord0.xy
+.out - texcoord0w outuv.z
+.out outsecond texcoord1
+.out outview view
+.out outquat normalquat
+.out outfog texcoord2
+.proc main
+    mov r14, constants.xxxy
+    mov r15.xy, v2
+    mov r15.zw, constants.y
+    ifu actor
+        mul r4.xyz, decode.x, v0
+        add r4.xyz, r4, v5
+        mov r4.w, constants.y
+        mova a0.x, v4.x
+        dp4 r5.x, bones[a0.x], r4
+        dp4 r5.y, bones[a0.x+1], r4
+        dp4 r5.z, bones[a0.x+2], r4
+        ifu actor_lighting
+            dp3 r8.x, bones[a0.x], v3
+            dp3 r8.y, bones[a0.x+1], v3
+            dp3 r8.z, bones[a0.x+2], v3
+        .end
+        cmp v4.x, ne, ne, v4.y
+        ifc cmp.x
+            mova a0.x, v4.y
+            dp4 r6.x, bones[a0.x], r4
+            dp4 r6.y, bones[a0.x+1], r4
+            dp4 r6.z, bones[a0.x+2], r4
+            mul r7.x, decode.z, v4.z
+            add r7.y, constants.y, -r7.x
+            mul r5.xyz, r5, r7.x
+            mad r5.xyz, r6, r7.y, r5
+            ifu actor_lighting
+                dp3 r9.x, bones[a0.x], v3
+                dp3 r9.y, bones[a0.x+1], v3
+                dp3 r9.z, bones[a0.x+2], v3
+                mul r8.xyz, r8, r7.x
+                mad r8.xyz, r9, r7.y, r8
+            .end
+        .end
+        mov r5.w, constants.y
+        dp4 r0.x, view[0], r5
+        dp4 r0.y, view[1], r5
+        dp4 r0.z, view[2], r5
+        mul r2, decode.y, v1
+        ifu actor_lighting
+            mul r8.xyz, decode.w, r8
+            dp3 r9.x, view[0], r8
+            dp3 r9.y, view[1], r8
+            dp3 r9.z, view[2], r8
+            ifu actor_environment
+                ; Original diffuse sphere map reconstructs its front normal
+                ; from view-normal XY. Evaluate its analytic hemisphere on
+                ; PICA, avoiding three rendered/copied 32x32 GX textures.
+                ; Source sphere-map sampling clamps each texture axis. Fur
+                ; growth can push XY outside its unit disk. Keep the native
+                ; quaternion on the front hemisphere; normalizing an invalid
+                ; quaternion later would otherwise rotate it behind the map.
+                ; Keep r9 intact for source vertex lighting and specular UVs.
+                min r12.xy, constants.y, r9
+                max r12.xy, -constants.y, r12
+                mul r10.xy, r12, r12
+                add r10.x, r10.x, r10.y
+                max r11.x, constants.y, r10.x
+                rsq r11.x, r11.x
+                mul r12.xy, r12, r11.x
+                add r10.x, constants.y, -r10.x
+                max r10.x, constants.x, r10.x
+                max r11.x, constants.z, r10.x
+                rsq r11.x, r11.x
+                mul r10.z, r10.x, r11.x
+                add r11.x, constants.y, r10.z
+                mul r11.x, constants.w, r11.x
+                rsq r11.y, r11.x
+                mul r11.z, r11.x, r11.y
+                mul r11.y, constants.w, r11.y
+                mul r14.x, -r12.y, r11.y
+                mul r14.y, r12.x, r11.y
+                ; r14.z is already zero from the entry initialization.
+                mov r14.w, r11.z
+            .end
+            mov r13, ambient
+            ifu light0
+                mul r10.xyz, light_position[0].w, r0
+                add r10.xyz, light_position[0], -r10
+                dp3 r11.x, r10, r10
+                max r11.x, constants.z, r11.x
+                rsq r11.x, r11.x
+                mul r10.xyz, r10, r11.x
+                dp3 r11.x, r10, r9
+                max r11.x, constants.x, r11.x
+                mad r13, r11.x, light_color[0], r13
+            .end
+            ifu light1
+                mul r10.xyz, light_position[1].w, r0
+                add r10.xyz, light_position[1], -r10
+                dp3 r11.x, r10, r10
+                max r11.x, constants.z, r11.x
+                rsq r11.x, r11.x
+                mul r10.xyz, r10, r11.x
+                dp3 r11.x, r10, r9
+                max r11.x, constants.x, r11.x
+                mad r13, r11.x, light_color[1], r13
+            .end
+            ifu light2
+                mul r10.xyz, light_position[2].w, r0
+                add r10.xyz, light_position[2], -r10
+                dp3 r11.x, r10, r10
+                max r11.x, constants.z, r11.x
+                rsq r11.x, r11.x
+                mul r10.xyz, r10, r11.x
+                dp3 r11.x, r10, r9
+                max r11.x, constants.x, r11.x
+                mad r13, r11.x, light_color[2], r13
+            .end
+            ifu light3
+                mul r10.xyz, light_position[3].w, r0
+                add r10.xyz, light_position[3], -r10
+                dp3 r11.x, r10, r10
+                max r11.x, constants.z, r11.x
+                rsq r11.x, r11.x
+                mul r10.xyz, r10, r11.x
+                dp3 r11.x, r10, r9
+                max r11.x, constants.x, r11.x
+                mad r13, r11.x, light_color[3], r13
+            .end
+            ifu light4
+                mul r10.xyz, light_position[4].w, r0
+                add r10.xyz, light_position[4], -r10
+                dp3 r11.x, r10, r10
+                max r11.x, constants.z, r11.x
+                rsq r11.x, r11.x
+                mul r10.xyz, r10, r11.x
+                dp3 r11.x, r10, r9
+                max r11.x, constants.x, r11.x
+                mad r13, r11.x, light_color[4], r13
+            .end
+            ifu light5
+                mul r10.xyz, light_position[5].w, r0
+                add r10.xyz, light_position[5], -r10
+                dp3 r11.x, r10, r10
+                max r11.x, constants.z, r11.x
+                rsq r11.x, r11.x
+                mul r10.xyz, r10, r11.x
+                dp3 r11.x, r10, r9
+                max r11.x, constants.x, r11.x
+                mad r13, r11.x, light_color[5], r13
+            .end
+            ifu light6
+                mul r10.xyz, light_position[6].w, r0
+                add r10.xyz, light_position[6], -r10
+                dp3 r11.x, r10, r10
+                max r11.x, constants.z, r11.x
+                rsq r11.x, r11.x
+                mul r10.xyz, r10, r11.x
+                dp3 r11.x, r10, r9
+                max r11.x, constants.x, r11.x
+                mad r13, r11.x, light_color[6], r13
+            .end
+            ifu light7
+                mul r10.xyz, light_position[7].w, r0
+                add r10.xyz, light_position[7], -r10
+                dp3 r11.x, r10, r10
+                max r11.x, constants.z, r11.x
+                rsq r11.x, r11.x
+                mul r10.xyz, r10, r11.x
+                dp3 r11.x, r10, r9
+                max r11.x, constants.x, r11.x
+                mad r13, r11.x, light_color[7], r13
+            .end
+            max r13, constants.x, r13
+            min r13, constants.y, r13
+            ifu actor_vertex_material
+                mul r2.xyz, r2, r13
+                ifu actor_alpha_lighting
+                    mul r2.w, r2.w, r13.w
+                .end
+            .else
+                mov r2.xyz, r13
+                ifu actor_alpha_lighting
+                    mov r2.w, r13.w
+                .end
+            .end
+        .end
+        mov r3.xy, v2 ; independent opacity plane shares UV0
+        ifu actor_second_uv
+            mov r3.xy, v2.zw ; compact actor retains original second UV
+        .end
+        ifu actor_specular
+            mov r15.xy, r9 ; specular UV0; base/mask share UV1
+        .end
+        ifu actor_fur
+            ; Original noise coordinates normalize (S,T,1) before 37.5x.
+            ; Raw compact UVs use tint.w=1/decodeUV; the same ratio avoids
+            ; another multiply and does not affect fur's texture-owned alpha.
+            mov r15.z, tint.w
+            dp3 r10.x, r15, r15
+            rsq r10.x, r10.x
+            mul r15.xyz, r15, r10.x
+        .end
+        mul outcolor, tint, r2
+    .else
+        dp4 r0.x, view[0], v0
+        dp4 r0.y, view[1], v0
+        dp4 r0.z, view[2], v0
+        mul outcolor, tint, v1
+        mov r3.xy, v3
+    .end
+    mov r0.w, constants.y
+    mov outview, -r0
+    mov outquat, r14
+    mov outfog.yzw, constants.xxxy
+    mul outfog.x, fog_distance_scale.x, -r0.z
+    dp4 outpos.x, projection[0], r0
+    dp4 outpos.y, projection[1], r0
+    dp4 outpos.z, projection[2], r0
+    dp4 outpos.w, projection[3], r0
+    mul r1.xy, uvscale[0], r15
+    add r1.xy, uvscale[0].zwzw, r1
+    mov outuv.x, r1.x
+    ; Flip homogeneous T before projective texture sampling.
+    add outuv.y, r15.z, -r1.y
+    mov outuv.zw, r15
+    mul r1.xy, uvscale[1], r3
+    add r1.xy, uvscale[1].zwzw, r1
+    mov outsecond.x, r1.x
+    add outsecond.y, constants.y, -r1.y
+    mov outsecond.zw, constants.xxxy
+    end
+.end

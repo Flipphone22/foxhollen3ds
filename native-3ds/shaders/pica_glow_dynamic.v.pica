@@ -1,0 +1,21 @@
+; Live source-local corners accompany dynamic particles; no CPU world transform.
+.constf units(0.0000152587890625,0.0078125,0.0,1.0)
+.out center position
+.out angles color
+.out rgba texcoord0
+.out uv texcoord1
+.out corners0 normalquat
+.out corners1 view
+.out corners2 texcoord2
+.proc main
+    mov center, v0
+    mul r0.xyz, units.x, v1
+    mov r0.w, v1.w
+    mov angles, r0
+    mov rgba, v2
+    mul uv, units.y, v3
+    mov corners0, v4
+    mov corners1, v5
+    mov corners2, v6
+    end
+.end

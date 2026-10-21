@@ -1,4 +1,5 @@
 #include "main/audio/sfx.h"
+#include "fh_audio_controls.h"
 #include <musyx/musyx.h>
 #include "main/audio_internal.h"
 #include "main/camera.h"
@@ -672,9 +673,8 @@ void Sfx_UpdateObjectChannel3D(SfxObjectChannel* objectChannel) {
         } else if (fx < 0) {
             fx = 0;
         }
-        sndFXCtrl(objectChannel->handle, 0xa, (u8)pan);
-        sndFXCtrl(objectChannel->handle, 0x83, (u8)fx);
-        sndFXCtrl(objectChannel->handle, 7, (u8)(objectChannel->paused ? 0 : level));
+        fh_audio_spatial_controls(objectChannel->handle,(u8)pan,(u8)fx,
+            (u8)(objectChannel->paused ? 0 : level),1);
     } else {
         int v;
         if (objectChannel->paused) {
@@ -682,7 +682,7 @@ void Sfx_UpdateObjectChannel3D(SfxObjectChannel* objectChannel) {
         } else {
             v = level;
         }
-        sndFXCtrl(objectChannel->handle, 7, (u8)v);
+        fh_audio_spatial_controls(objectChannel->handle,0,0,(u8)v,0);
     }
 }
 

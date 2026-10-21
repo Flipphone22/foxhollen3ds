@@ -26,7 +26,7 @@
 #include "musyx/synthdata.h"
 #if MUSY_TARGET == MUSY_TARGET_PC
 #include "hw_pc_assets.h"
-#include "hw_pc_internal.h"
+#include "fh_musyx_internal.h"
 #include "musyx/dspvoice.h"
 #include "musyx/pc.h"
 #endif

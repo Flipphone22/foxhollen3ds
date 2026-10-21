@@ -1,3 +1,16 @@
+#include "main/trig_float_helpers.h"
+#include "fh_pica_shadow_query.h"
+#include "fh_pica_shadow_project.h"
+#include "fh_pica_shadow_direction.h"
+#include "main/frame_timing.h"
+#include "fh_pica_planar_shadow.h"
+#include "fh_pica_model.h"
+#include "fh_ground_receiver.h"
+#include "fh_pica_ground_shadow.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_graphics_options.h"
+#include "fh_platform.h"
 #include "main/map_block.h"
 #include "main/texture.h"
 #include "track/intersect_depth_state.h"
@@ -102,7 +115,7 @@ static int objShadowGetFadedAlpha(GameObject* obj, u8 param);
 extern f32 gShadowVolumeBoxCorners[0x19];
 f32 gPrevSunDir[3];
 
-extern u8 gShadowDrawScratch[0x5DC0] ALIGN_DECL(32);
+extern u8 gShadowDrawScratch[0x5DC0] __attribute__((aligned(32)));
 
 extern f32 lbl_8038D77C[0x18];
 
@@ -236,70 +249,99 @@ static void buildGroundShadowQuad(s16* out, GameObject* obj) {
     }
 }
 
-void objDrawGroundShadow(GameObject* obj, ObjModel* model) {
-    s16* shadowVerts;
-    u8 alpha;
-    MtxPtr viewMtx;
-    GXColor kColor;
-    f32 mtx[16];
-    f32 outMtx[16];
 
-    shadowVerts = (s16*)model->groundShadowVerts;
-    if (*(u8*)((u8*)shadowVerts + 0x18) == 0) {
-        buildGroundShadowQuad(shadowVerts, obj);
+static int fh_native_shadow_query(GameObject* obj,const float direction[3]) {
+    ObjModelState* state=obj->anim.modelState;
+    ObjHitsPriorityState* hit=(ObjHitsPriorityState*)obj->anim.hitReactState;
+    float base[3]={obj->anim.worldPosX,obj->anim.worldPosY,obj->anim.worldPosZ};
+    if(hit)base[1]+=(float)((int)hit->primaryCapsuleOffsetB/2);
+    float ax=__fabsf(direction[0]),az=__fabsf(direction[2]);
+    s16 pitch=(u16)getAngle(ax>az?ax:az,direction[1]);
+    if(pitch>0x2000)pitch=0x2000;
+    s16 yaw=(s16)getAngle(direction[0],direction[2]);
+    float s0,c0,s1,c1;angleToVec2((u16)yaw,&s0,&c0);angleToVec2((u16)pitch,&s1,&c1);
+    int32_t bounds[6];
+    if(!fh_pica_shadow_query_box(bounds,base,state->shadowScale,state->shadowModelScale,s0,c0,s1,c1))
+        return 0;
+    /* Round in original world space before subtracting the grid origin. */
+    int origin[3]={gMapBlockOriginWorldX,0,gMapBlockOriginWorldZ};
+    for(unsigned k=0;k<6;k++){
+        int64_t value=(int64_t)bounds[k]-origin[k%3]+(k<3?-5:5);
+        if(value<INT32_MIN || value>INT32_MAX)return 0;
+        bounds[k]=(int32_t)value;
     }
-    if (*(u8*)((u8*)shadowVerts + 0x18) != 0xff) {
-        alpha = (u8)objShadowGetFadedAlpha(obj, 0x96);
-        kColor.a = alpha;
-        if (alpha != 0) {
-            viewMtx = (MtxPtr)Camera_GetViewMatrix();
-            Obj_BuildWorldTransformMatrix(obj, mtx, 0);
-            mtx[0] = 1.0f;
-            mtx[1] = 0.0f;
-            mtx[2] = 0.0f;
-            mtx[4] = 0.0f;
-            mtx[5] = 1.0f;
-            mtx[6] = 0.0f;
-            mtx[8] = 0.0f;
-            mtx[9] = 0.0f;
-            mtx[10] = 1.0f;
-            PSMTXConcat(viewMtx, (MtxPtr)mtx, (MtxPtr)outMtx);
-            GXLoadPosMtxImm((const f32(*)[4])outMtx, GX_PNMTX9);
-            GXClearVtxDesc();
-            GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
-            GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
-            GXSetNumTexGens(1);
-            GXSetTexCoordGen2(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_FALSE, GX_PTIDENTITY);
-            GXSetTevKColor(GX_KCOLOR0, kColor);
-            GXSetTevKAlphaSel(GX_TEVSTAGE0, GX_TEV_KASEL_K0_A);
-            GXSetNumTevStages(1);
-            GXSetNumIndStages(0);
-            GXSetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_REG, GX_LIGHT_NULL, GX_DF_NONE, GX_AF_NONE);
-            GXSetChanCtrl(GX_COLOR1A1, GX_DISABLE, GX_SRC_REG, GX_SRC_REG, GX_LIGHT_NULL, GX_DF_NONE, GX_AF_NONE);
-            GXSetNumChans(0);
-            GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR_NULL);
-            GXSetTevDirect(GX_TEVSTAGE0);
-            GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO);
-            GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_KONST, GX_CA_TEXA, GX_CA_ZERO);
-            GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_ENABLE, GX_TEVPREV);
-            GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_ENABLE, GX_TEVPREV);
-            gxSetZMode_(1, GX_LEQUAL, 0);
-            GXSetCullMode(GX_CULL_NONE);
-            GXSetCurrentMtx(GX_PNMTX9);
-            GXSetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_NOOP);
-            selectTexture((Texture*)(&obj->anim)->modelState->shadowTexture, 0);
-            GXBegin(GX_QUADS, GX_VTXFMT6, 4);
-            GXPosition3s16(shadowVerts[0], shadowVerts[1], shadowVerts[2]);
-            GXTexCoord2s16(0, 0);
-            GXPosition3s16(shadowVerts[3], shadowVerts[4], shadowVerts[5]);
-            GXTexCoord2s16(0x400, 0);
-            GXPosition3s16(shadowVerts[6], shadowVerts[7], shadowVerts[8]);
-            GXTexCoord2s16(0x400, 0x400);
-            GXPosition3s16(shadowVerts[9], shadowVerts[10], shadowVerts[11]);
-            GXTexCoord2s16(0, 0x400);
-            GXSetCurrentMtx(GX_PNMTX0);
+    fh_pica_shadow_project_query(bounds);return 1;
+}
+
+void objDrawGroundShadow(GameObject* obj, ObjModel* model) {
+    if(!fh_pica_scene_actors || (fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_GROUND_SHADOWS)))return;
+    if(!obj->anim.modelState)return;
+    /* Distance/alpha admission must precede the collision query: an invisible
+     * contact footprint needs no receiver. This reads live source fade only. */
+    unsigned contact=obj->anim.modelInstance->shadowType!=OBJ_SHADOW_TYPE_CRASH;
+    /* Original projected casters use sky intensity, tint and fade/hold state.
+     * Static authored CRASH decals retain their separate source policy. The
+     * native queue visits each caster once; retired renderShadows is absent. */
+    unsigned alpha=contact?objShadowUpdateAlpha(obj,framesThisStep):(u8)objShadowGetFadedAlpha(obj,0x96);
+    if(alpha<=(contact?4u:0u))return;
+    float world[16],plane[3][4],view[3][4];unsigned clip[4];
+    if(contact && (fh_graphics_options&FH_GRAPHICS_SILHOUETTE_SHADOWS)){
+        fh_pica_shadow_project_surface((obj->anim.modelState->flags & OBJ_MODEL_STATE_SHADOW_ALT_TRACK_SURFACE)!=0);
+        if(obj->anim.modelInstance->shadowType==OBJ_SHADOW_TYPE_BIG_BOX &&
+           !(obj->anim.modelInstance->renderFlags&OBJDEF_RENDERFLAG_PROJECTED_SHADOW)){
+            if(!obj->anim.modelState->shadowTexture)return;
+            unsigned page=fh_pica_hud_find(obj->anim.modelState->shadowTexture);
+            if(!page){fh_platform_panic("Native authored shadow missing mask");return;}
+            Obj_BuildWorldTransformMatrix(obj,world,0);
+            float center[3]={world[3],world[7],world[11]};
+            obj->anim.modelState->shadowOffsetX=0;obj->anim.modelState->shadowOffsetY=1;obj->anim.modelState->shadowOffsetZ=0;
+            const float vertical[3]={0,1,0};fh_native_shadow_query(obj,vertical);
+            fh_pica_shadow_project_mask(page,center,obj->anim.modelState->shadowScale,alpha);
+            return;
         }
+        const FhSceneAsset *asset=fh_native_scene_find(model->file);
+        if(!asset)return;
+        Obj_BuildWorldTransformMatrix(obj,world,0);
+        ObjModelState *state=obj->anim.modelState;
+        float light[3]={state->shadowOffsetX,state->shadowOffsetY,state->shadowOffsetZ};
+        float incoming[3]={-light[0],-light[1],-light[2]};
+        skyGetObjectLightDirection(obj,incoming,incoming+1,incoming+2);
+        if(!fh_pica_shadow_direction(light,incoming))return;
+        state->shadowOffsetX=light[0];state->shadowOffsetY=light[1];state->shadowOffsetZ=light[2];
+        fh_native_shadow_query(obj,light);
+        float fade=obj==Obj_GetPlayerObject()?10.f:obj->anim.hitboxScale*obj->anim.rootMotionScale;
+        fh_pica_shadow_project(asset,(const float*)ObjModel_GetJointMatrix((u8*)model,0),
+            ((ModelFileHeader*)model->file)->jointCount,(const float(*)[4])world,
+            light,state->shadowScale,fade,alpha);
+        return;
     }
+    if(contact){
+        /* Necessary CPU work: query collision for the live receiver plane.
+         * Derive a transform directly; never generate/upload receiver vertices. */
+        float distance;Vec normal,b={1,0,0},c;
+        if(fh_native_ground_receiver(obj->anim.localPosX,obj->anim.localPosY,obj->anim.localPosZ,&distance,(float*)&normal)!=0)return;
+        PSVECNormalize(&normal,&normal);
+        if(__fabsf(PSVECDotProduct(&normal,&b))>=.9f){b.x=0;b.z=1;}
+        PSVECCrossProduct(&normal,&b,&c);PSVECCrossProduct(&c,&normal,&b);
+        PSVECNormalize(&b,&b);PSVECNormalize(&c,&c);
+        float scale=.5f*obj->anim.modelState->shadowScale;
+        PSVECScale(&b,&b,scale);PSVECScale(&c,&c,scale);
+        fh_pica_ground_contact_matrix(plane,(const float*)&b,(const float*)&c,distance);
+    }else{
+        s16 *corners=(s16*)model->groundShadowVerts;if(!corners)return;
+        if(!*((u8*)corners+0x18))buildGroundShadowQuad(corners,obj);
+        if(*((u8*)corners+0x18)==0xff)return;
+        const float zero[3]={0,0,0};fh_pica_ground_shadow_matrix(plane,corners,zero);
+    }
+    if(!contact && !obj->anim.modelState->shadowTexture)return;
+    unsigned page=fh_pica_hud_find(contact?getNewShadowSmallDiskTexture():obj->anim.modelState->shadowTexture);
+    if(!page){fh_platform_panic("Native ground shadow missing resident mask");return;}
+    Obj_BuildWorldTransformMatrix(obj,world,0);
+    for(unsigned row=0;row<3;row++)plane[row][3]+=world[row*4+3];
+    PSMTXConcat((MtxPtr)Camera_GetViewMatrix(),plane,view);
+    GXGetScissor(clip,clip+1,clip+2,clip+3);
+    fh_pica_ground_shadow(page,(const float(*)[4])Camera_GetProjectionMatrix(),view,alpha,clip);
+
 }
 
 static void trackDolphin_buildShadowVolumePlanes(int* obj, void* buf48, void* bufA8) {
@@ -771,6 +813,18 @@ uintptr_t shadowInit(GameObject* obj, uintptr_t arena, int flags) {
     } else {
         modelState->shadowTexture = getNewShadowSmallDiskTexture();
     }
+    /* Immutable masks only, at their load boundary. Never publish a stale CPU
+     * copy of a generated projected-shadow render target. */
+    Texture *nativeShadowMask=NULL;
+    if((obj->anim.modelInstance->shadowType==OBJ_SHADOW_TYPE_CRASH || obj->anim.modelInstance->shadowType==OBJ_SHADOW_TYPE_BIG_BOX) && modelState->shadowTexture &&
+       !(obj->anim.modelInstance->renderFlags & OBJDEF_RENDERFLAG_PROJECTED_SHADOW))nativeShadowMask=modelState->shadowTexture;
+    else if(obj->anim.modelInstance->shadowType==OBJ_SHADOW_TYPE_BIG_BOX || obj->anim.modelInstance->shadowType==OBJ_SHADOW_TYPE_MODEL_GEOMETRIC)
+        nativeShadowMask=getNewShadowSmallDiskTexture();
+    if(nativeShadowMask && !fh_pica_hud_find(nativeShadowMask))fh_pica_game_hud_loaded(nativeShadowMask);
+    if(obj->anim.modelInstance->shadowType==OBJ_SHADOW_TYPE_BIG_BOX){
+        Texture*contact=getNewShadowSmallDiskTexture();
+        if(contact && !fh_pica_hud_find(contact))fh_pica_game_hud_loaded(contact);
+    }
     if (obj->anim.modelInstance->shadowType == OBJ_SHADOW_TYPE_BIG_BOX) {
         modelState->shadowRenderResource = NULL;
     } else {
@@ -910,4 +964,6 @@ void initTextures(void) {
 
 f32 gShadowVolumeBoxCorners[0x19];
 f32 lbl_8038D77C[0x18];
-u8 gShadowDrawScratch[0x5DC0] ALIGN_DECL(32);
+u8 gShadowDrawScratch[0x5DC0] __attribute__((aligned(32)));
+
+_Static_assert(__alignof__(gShadowDrawScratch) >= 32, "Native alignment: gShadowDrawScratch");

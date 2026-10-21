@@ -38,7 +38,7 @@ void C_MTXCopy(const Mtx src, Mtx dst) {
   }
 }
 
-void C_MTXConcat(const Mtx a, const Mtx b, Mtx ab) {
+void fh_reference_unused_MTXConcat(const Mtx a, const Mtx b, Mtx ab) {
   Mtx mTmp;
   MtxPtr m;
 

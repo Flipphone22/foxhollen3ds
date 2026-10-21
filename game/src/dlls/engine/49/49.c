@@ -1,4 +1,13 @@
 #include "main/texture.h"
+#include "fh_pica_hud.h"
+static void *fh_pica_hud_asset(int id){
+    void *texture=textureLoadAsset(id);fh_pica_game_hud_loaded(texture);return texture;
+}
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
+#include "main/texture.h"
 #include "track/intersect_hud.h"
 #include "main/gametext_box.h"
 #include "dolphin/math.h"
@@ -387,7 +396,7 @@ int Minimap_update(void) {
                     gMinimapLoadedMapId = 0;
                 }
                 if (mapTextureId != 0) {
-                    minimapTexture = textureLoadAsset(mapTextureId);
+                    minimapTexture = fh_pica_hud_asset(mapTextureId);
                     gMinimapLoadedMapId = mapTextureId;
                 }
             }
@@ -917,7 +926,7 @@ void Minimap_release(void) {
 }
 
 void Minimap_initialise(void) {
-    gMinimapCompassTexture = textureLoadAsset(MINIMAP_TEXTURE_COMPASS);
+    gMinimapCompassTexture = fh_pica_hud_asset(MINIMAP_TEXTURE_COMPASS);
     gMinimapBoxY = 340;
 }
 

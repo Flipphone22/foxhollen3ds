@@ -1,0 +1,48 @@
+; Prototype source sphere-map light channel. Not yet bound by gameplay.
+; v0: persistent map clip position; v1: original hemisphere mesh normal.
+; One sun/moon channel per pass keeps its RGB and diffuse-alpha interpolants
+; separate until the texture combiner, as in Rcp_SetupDistortionLights.
+; c0 points toward light, c1 is GXInitSpecularDir's fixed-view half vector.
+; c2=(k0red,k2red,k0blue,k2blue), c3 source material RGB, c4.x alpha scale.
+.fvec direction, half_direction, attenuation, material, diffuse_alpha
+.constf constants(0.0,1.0,0.00000001,0.5)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0
+.proc main
+    mov outpos.xy, v0
+    mov outpos.zw, constants.xxxy
+    dp3 r0.x, direction, v1
+    dp3 r0.y, half_direction, v1
+    max r0.y, constants.x, r0.y
+    cmp constants.x, le, le, r0.x
+    ifc cmp.x
+        mul r0.y, r0.y, r0.y
+    .else
+        mov r0.y, constants.x
+    .end
+    mul r1.xy, attenuation.yw, r0.y
+    add r1.xy, attenuation.xz, r1
+    mov r2, constants.xxxx
+    cmp constants.z, lt, lt, r1.x
+    ifc cmp.x
+        rcp r2.x, r1.x
+        mul r2.x, r2.x, r0.y
+    .end
+    cmp constants.z, lt, lt, r1.y
+    ifc cmp.x
+        rcp r2.z, r1.y
+        mul r2.z, r2.z, r0.y
+    .end
+    min r2.xyz, constants.y, r2
+    mul r2.xyz, material, r2
+    max r0.x, constants.x, r0.x
+    mul r2.w, diffuse_alpha.x, r0.x
+    min r2.w, constants.y, r2.w
+    mov outcolor, r2
+    ; Source (0.5*Nx+0.5, -0.5*Ny+0.5), with native texture V flipped.
+    mul r3.xy, constants.w, v1
+    add outuv.xy, constants.w, r3
+    mov outuv.zw, constants.xxxy
+    end
+.end

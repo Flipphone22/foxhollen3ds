@@ -1,10 +1,13 @@
 #include "musyx/platform.h"
 
 #include "hw_pc_decode.h"
-#include "hw_pc_internal.h"
+#include "fh_audio_span.h"
+#include "fh_musyx_internal.h"
 #include <math.h>
 
 #include <string.h>
+#include <stdlib.h>
+#include "fh_audio_source_bridge.h"
 
 #include "musyx/adsr.h"
 #include "musyx/assert.h"
@@ -12,6 +15,8 @@
 #include "musyx/musyx.h"
 #include "musyx/sal.h"
 #include "musyx/synth.h"
+#include "fh_audio_lerp.h"
+#include "fh_audio_profile.h"
 
 // Audio parameters
 #define SAL_SAMPLES_PER_FRAME SAL_PC_MAX_FRAMES
@@ -29,12 +34,40 @@ static s32 adaptedWork[5][SAL_PC_MAX_FRAMES];
  * reusing a voice cannot truncate the preceding generation's ramp. */
 #define DEPOP_RING 1024
 static s32 depop[8][11][DEPOP_RING];
+
+/* CPU-only audio-owner metadata. One bit per32 samples, 352 bytes total.
+ * A set bit is conservative; partial consumption never retires the block.
+ * All tail writes publish their touched blocks before this owner consumes. */
+static u32 fh_depop_live[8][11];
+static void fh_depop_mark(u32 *live,u32 first,u32 frames) {
+  while(frames) {
+    u32 at=first & (DEPOP_RING-1),take=32-(at&31);
+    if(take>frames)take=frames;
+    *live |= 1u << (at>>5);
+    first+=take;frames-=take;
+  }
+}
+static void fh_depop_mix(s32 *buffer,s32 *ring,u32 *live,u32 first,u32 frames) {
+  if(!*live)return;
+  while(frames) {
+    u32 at=first & (DEPOP_RING-1),take=32-(at&31),bit=1u<<(at>>5);
+    if(take>frames)take=frames;
+    if(*live & bit) {
+      for(u32 i=0;i<take;i++){buffer[i]+=ring[at+i];ring[at+i]=0;}
+      if(!(at&31) && take==32)*live &= ~bit;
+    }
+    buffer+=take;first+=take;frames-=take;
+  }
+}
+
 static s32 lastContribution[SYNTH_MAX_VOICES][11];
 static u32 depopCursor, renderOffset;
+static unsigned fh_source_cycle_complete;
 
 void salPCBeginCycle(u64 tick) {
+  fh_source_cycle_complete = 0;
   cycleTick = tick;
-  u32 rate = salPCMixRate();
+  u32 rate = 32000u;
   u64 begin = salPCBoundary(tick, rate);
   for (u32 i = 0; i <= 5; ++i)
     segmentOffset[i] = (u32)(salPCBoundary(tick + i, rate) - begin);
@@ -102,9 +135,9 @@ static double besselI0(double x) {
   return sum;
 }
 
-static void initResampleTables(void) {
-  if (resampleTablesInitialized)
-    return;
+static void initRateTables(void) {
+  static u8 initialized;
+  if(initialized)return;
   /* Generated Blackman-windowed sinc filters, independently authored for the
    * native renderer. Each phase has exact unity DC gain in Q23. Filter banks
    * lower the cutoff as source pitch rises, rather than aliasing downsampling. */
@@ -130,6 +163,12 @@ static void initResampleTables(void) {
     }
   }
 
+  initialized=1;
+}
+
+static void initResampleTables(void) {
+  if (resampleTablesInitialized)
+    return;
   static const double voiceCutoffs[3] = {0.5, 0.75, 1.0};
 
   for (u32 set = 0; set < 3; ++set) {
@@ -164,6 +203,7 @@ static void initResampleTables(void) {
 }
 
 const s32 *salPCRateCoefficients(u32 inputRate, u32 outputRate, u32 fraction) {
+  initRateTables();
   /* Leave room for the finite filter's transition band below the destination
    * Nyquist frequency. This also limits phase-dependent alias energy. */
   u32 band = inputRate > outputRate ? (u64)outputRate * POLYPHASE_BANDS * 9 / (inputRate * 10)
@@ -173,28 +213,20 @@ const s32 *salPCRateCoefficients(u32 inputRate, u32 outputRate, u32 fraction) {
   return polyphaseTable[band - 1][fraction >> 9];
 }
 
+#include "fh_audio_ramp.h"
+static s32 nativeEnvelope[SAL_SAMPLES_PER_FRAME];
 static s32 mixRampChannel(s32 *dest, const s32 *src, int nSamples, s16 startVol, s16 endVol,
                           u16 envStart, u16 envEnd, int frameOffset) {
-  if (!dest || (!startVol && !endVol))
-    return 0;
-  s32 contribution = 0;
-  for (int i = 0; i < nSamples; ++i) {
-    s32 env = envStart + ((s32)envEnd - envStart) * i / nSamples;
-    s32 vol = startVol + ((s32)endVol - startVol) * (frameOffset + i) / (s32)cycleFrames;
-    s32 mixVol = (vol * env) >> 15;
-    contribution = (src[i] * mixVol) >> 15;
-    dest[i] += contribution;
-  }
-  return contribution;
+  if(envStart!=envEnd)return fh_mix_envelope(dest,src,nSamples,startVol,endVol,nativeEnvelope,frameOffset,cycleFrames);
+  return fh_mix_ramp(dest,src,nSamples,startVol,endVol,envStart,envEnd,frameOffset,cycleFrames);
 }
 
 static void retireContribution(DSPvoice *voice) {
   s32 *last = lastContribution[voice - dspVoice];
-  const u32 frames = (salPCMixRate() + 199) / 200;
+  const u32 frames = (32000u + 199) / 200;
   for (u32 channel = 0; channel < 11; ++channel) {
-    for (u32 frame = 0; frame < frames; ++frame)
-      depop[voice->studio][channel][(depopCursor + renderOffset + frame) & (DEPOP_RING - 1)] +=
-          (s32)((s64)last[channel] * (frames - frame - 1) / frames);
+    if(last[channel])fh_depop_mark(&fh_depop_live[voice->studio][channel],depopCursor+renderOffset,frames);
+    fh_depop_tail(depop[voice->studio][channel],DEPOP_RING-1,depopCursor+renderOffset,frames,last[channel]);
     last[channel] = 0;
   }
 }
@@ -205,7 +237,7 @@ static void mixStudioOutput(const s32 *left, const s32 *right, const s32 *surrou
     mixBufferR[i] += right[i];
     if (surround != NULL) {
       s32 surroundMix = (s32)((s64)surround[i] * SURROUND_DOWNMIX_GAIN >> 15);
-      if (salPCChannels() == 2) {
+      if (2u == 2) {
         mixBufferL[i] += surroundMix;
         mixBufferR[i] += surroundMix;
       } else {
@@ -226,11 +258,12 @@ static void foldStereoToOutput(const s32 *left, const s32 *right) {
 /* Causal generated polyphase interpolation. Decoder history and sample position
  * advance only as the renderer consumes source samples; there is no speculative
  * decode across a stream refill boundary. */
-static int resampleVoice(DSPvoice *voice, u32 voiceIdx, s32 *out, int numSamples, u32 pitch) {
+static __attribute__((noinline)) int resampleVoice(DSPvoice *voice, u32 voiceIdx, s32 *out, int numSamples, u32 pitch) {
   VoiceResamplerState *state = &voiceResampler[voiceIdx];
   const u32 mode = voice->srcTypeSelect;
   if (mode == SAL_SRC_NONE)
     pitch = 65536; /* SDK SRC_NONE always runs at the mixing rate. */
+  FhPCMSpan span={0};
   u32 filter = voice->srcCoefSelect;
   for (int i = 0; i < numSamples; ++i) {
     state->phase += pitch;
@@ -248,7 +281,7 @@ static int resampleVoice(DSPvoice *voice, u32 voiceIdx, s32 *out, int numSamples
         state->reader.predictorScale = voice->streamLoopPS;
         state->reader.useInitialPS = true;
       }
-      s16 sample = salPCReadSample(&state->reader, &voice->smp_info, voice->streamLoopPS);
+      s16 sample = fh_pcm_span_read(&span, &state->reader, &voice->smp_info, voice->streamLoopPS);
       state->history[state->historyIndex++ & (POLYPHASE_TAPS - 1)] = sample;
       if (state->reader.ended && state->tail < VOICE_TAPS)
         ++state->tail;
@@ -259,7 +292,7 @@ static int resampleVoice(DSPvoice *voice, u32 voiceIdx, s32 *out, int numSamples
     } else if (mode == SAL_SRC_LINEAR) {
       s32 older = state->history[(state->historyIndex - 2) & (POLYPHASE_TAPS - 1)];
       s32 newer = state->history[(state->historyIndex - 1) & (POLYPHASE_TAPS - 1)];
-      out[i] = older + (s32)((s64)(newer - older) * state->phase / 65536);
+      out[i] = fh_audio_lerp16(older,newer,state->phase);
     } else {
       const s32 *coefficients = voicePolyphaseTable[filter < 3 ? filter : 2][state->phase >> 9];
       s64 result = 0;
@@ -287,23 +320,13 @@ static u32 itdTarget(const DSPvoice *voice, u32 channel) {
   u32 shift = channel ? voice->itdShiftR : voice->itdShiftL;
   if (shift > 32)
     shift = 32;
-  return (u32)(((u64)shift * salPCMixRate() * 65536) / 32000);
+  return (u32)(((u64)shift * 32000u * 65536) / 32000);
 }
 
-static void applyITD(const DSPvoice *voice, VoiceResamplerState *state, int frames, int offset) {
+#include "fh_audio_itd.h"
+static void applyITD(const DSPvoice *voice, VoiceResamplerState *state, int frames, int offset, const s32 *ears[2]) {
   u32 targets[2] = {itdTarget(voice, 0), itdTarget(voice, 1)};
-  for (int i = 0; i < frames; ++i) {
-    state->itdHistory[state->itdIndex & 127] = voiceDecodeBuf[i];
-    for (u32 channel = 0; channel < 2; ++channel) {
-      s64 delay = state->itdDelay[channel] +
-                  ((s64)targets[channel] - state->itdDelay[channel]) * (offset + i) / cycleFrames;
-      u32 index = state->itdIndex - (u32)(delay >> 16);
-      s32 newer = state->itdHistory[index & 127];
-      s32 older = state->itdHistory[(index - 1) & 127];
-      itdOutput[channel][i] = newer + (s32)((s64)(older - newer) * (delay & 0xffff) / 65536);
-    }
-    ++state->itdIndex;
-  }
+  fh_audio_itd_prepare(ears,itdOutput[0],itdOutput[1],voiceDecodeBuf,state->itdHistory,&state->itdIndex,state->itdDelay,targets,frames,offset,cycleFrames);
 }
 
 // Returns 1 if voice finished playing (end of non-looping sample), 0 otherwise.
@@ -314,6 +337,14 @@ static int renderVoiceSegment(DSPvoice *vp, s32 *mainL, s32 *mainR, s32 *mainS, 
   if (vp->state == DSP_VOICE_STATE_INACTIVE)
     return 0;
 
+  u32 nativePitch=vp->playInfo.pitch?vp->playInfo.pitch:vp->pitch[0];
+  FhAudioSourceSegment nativeSegment={
+      .source_frame=salPCBoundary(cycleTick,32000u)+frameOffset,
+      .pitch=nativePitch,.offset=frameOffset,.frames=frameSamples,.cycle_frames=cycleFrames,
+      .env_start=adsrStart,.env_end=adsrEnd,
+      .held=!nativePitch && vp->srcTypeSelect!=SAL_SRC_NONE};
+  int nativeResult=fh_audio_source_segment(voiceIdx,vp,&nativeSegment);
+  if(nativeResult!=-1){if(nativeResult<0)abort();return nativeResult;}
   const SAMPLE_INFO *smp = &vp->smp_info;
   if (smp->addr == NULL)
     return 0;
@@ -326,7 +357,9 @@ static int renderVoiceSegment(DSPvoice *vp, s32 *mainL, s32 *mainR, s32 *mainS, 
 
   /* Decode samples into temp buffer */
   VoiceResamplerState *state = &voiceResampler[voiceIdx];
+  u64 profileStart=fh_mix_begin(0);
   int nSamples = resampleVoice(vp, voiceIdx, voiceDecodeBuf, frameSamples, pitch);
+  fh_mix_stage(0,profileStart);profileStart=fh_mix_begin(1);
   u32 tail = vp->srcTypeSelect == SAL_SRC_NONE     ? 1
              : vp->srcTypeSelect == SAL_SRC_LINEAR ? 2
                                                    : VOICE_TAPS;
@@ -343,30 +376,33 @@ static int renderVoiceSegment(DSPvoice *vp, s32 *mainL, s32 *mainR, s32 *mainS, 
   }
 #endif
 
-  applyITD(vp, state, nSamples, frameOffset);
+  const s32 *ears[2];
+  applyITD(vp, state, nSamples, frameOffset, ears);
+  fh_mix_stage(1,profileStart);profileStart=fh_mix_begin(2);
+  if(adsrStart!=adsrEnd)fh_audio_envelope(nativeEnvelope,nSamples,adsrStart,adsrEnd);
   lastContribution[voiceIdx][0] =
-      mixRampChannel(mainL ? mainL + frameOffset : NULL, itdOutput[0], nSamples, (s16)vp->lastVolL,
+      mixRampChannel(mainL ? mainL + frameOffset : NULL, ears[0], nSamples, (s16)vp->lastVolL,
                      (s16)vp->volL, adsrStart, adsrEnd, frameOffset);
   lastContribution[voiceIdx][1] =
-      mixRampChannel(mainR ? mainR + frameOffset : NULL, itdOutput[1], nSamples, (s16)vp->lastVolR,
+      mixRampChannel(mainR ? mainR + frameOffset : NULL, ears[1], nSamples, (s16)vp->lastVolR,
                      (s16)vp->volR, adsrStart, adsrEnd, frameOffset);
   lastContribution[voiceIdx][2] =
       mixRampChannel(mainS ? mainS + frameOffset : NULL, voiceDecodeBuf, nSamples,
                      (s16)vp->lastVolS, (s16)vp->volS, adsrStart, adsrEnd, frameOffset);
   lastContribution[voiceIdx][3] =
-      mixRampChannel(auxAL ? auxAL + frameOffset : NULL, itdOutput[0], nSamples, (s16)vp->lastVolLa,
+      mixRampChannel(auxAL ? auxAL + frameOffset : NULL, ears[0], nSamples, (s16)vp->lastVolLa,
                      (s16)vp->volLa, adsrStart, adsrEnd, frameOffset);
   lastContribution[voiceIdx][4] =
-      mixRampChannel(auxAR ? auxAR + frameOffset : NULL, itdOutput[1], nSamples, (s16)vp->lastVolRa,
+      mixRampChannel(auxAR ? auxAR + frameOffset : NULL, ears[1], nSamples, (s16)vp->lastVolRa,
                      (s16)vp->volRa, adsrStart, adsrEnd, frameOffset);
   lastContribution[voiceIdx][5] =
       mixRampChannel(auxAS ? auxAS + frameOffset : NULL, voiceDecodeBuf, nSamples,
                      (s16)vp->lastVolSa, (s16)vp->volSa, adsrStart, adsrEnd, frameOffset);
   lastContribution[voiceIdx][6] =
-      mixRampChannel(auxBL ? auxBL + frameOffset : NULL, itdOutput[0], nSamples, (s16)vp->lastVolLb,
+      mixRampChannel(auxBL ? auxBL + frameOffset : NULL, ears[0], nSamples, (s16)vp->lastVolLb,
                      (s16)vp->volLb, adsrStart, adsrEnd, frameOffset);
   lastContribution[voiceIdx][7] =
-      mixRampChannel(auxBR ? auxBR + frameOffset : NULL, itdOutput[1], nSamples, (s16)vp->lastVolRb,
+      mixRampChannel(auxBR ? auxBR + frameOffset : NULL, ears[1], nSamples, (s16)vp->lastVolRb,
                      (s16)vp->volRb, adsrStart, adsrEnd, frameOffset);
   lastContribution[voiceIdx][8] =
       mixRampChannel(auxBS ? auxBS + frameOffset : NULL, voiceDecodeBuf, nSamples,
@@ -374,8 +410,9 @@ static int renderVoiceSegment(DSPvoice *vp, s32 *mainL, s32 *mainR, s32 *mainS, 
 
   for (u32 channel = 0; channel < 2; ++channel)
     lastContribution[voiceIdx][9 + channel] = mixRampChannel(
-        rearMain[vp->studio][salFrame][channel] + frameOffset, itdOutput[channel], nSamples,
+        rearMain[vp->studio][salFrame][channel] + frameOffset, ears[channel], nSamples,
         vp->lastVolRear[channel], vp->volRear[channel], adsrStart, adsrEnd, frameOffset);
+  fh_mix_stage(2,profileStart);
   return voiceDone;
 }
 
@@ -477,6 +514,8 @@ void salCtrlDsp(s16 *dest) {
           filterState[voiceIdx] = 0;
 #endif
           mixStart = vp->singleOffset;
+          if(!fh_audio_source_begin(voiceIdx,vp,
+              salPCBoundary(cycleTick,32000u)+segmentOffset[mixStart],32000u))abort();
           vp->state = DSP_VOICE_STATE_PLAYING;
           renderOffset = segmentOffset[mixStart];
         }
@@ -582,11 +621,7 @@ void salCtrlDsp(s16 *dest) {
         buffer = rearMain[st][salFrame][channel - 9];
       else
         buffer += (channel % 3) * SAL_PC_MAX_FRAMES;
-      for (u32 frame = 0; frame < cycleFrames; ++frame) {
-        u32 index = (depopCursor + frame) & (DEPOP_RING - 1);
-        buffer[frame] += depop[st][channel][index];
-        depop[st][channel][index] = 0;
-      }
+      fh_depop_mix(buffer,depop[st][channel],&fh_depop_live[st][channel],depopCursor,cycleFrames);
     }
 
     if (stp->main[salFrame] != NULL) {
@@ -600,7 +635,7 @@ void salCtrlDsp(s16 *dest) {
         if (srcMain == NULL)
           continue;
 
-        u32 rate = salPCMixRate();
+        u32 rate = 32000u;
         u64 previousTick = cycleTick >= 5 ? cycleTick - 5 : 0;
         u32 previousFrames =
             cycleTick ? (u32)(salPCBoundary(cycleTick, rate) - salPCBoundary(previousTick, rate))
@@ -632,14 +667,22 @@ void salCtrlDsp(s16 *dest) {
       }
     }
 
+    extern int fh_audio_game_capture_aux(unsigned,unsigned,uint64_t,unsigned,
+        const int32_t *,const int32_t *,const int32_t *);
     /* Legacy callbacks always receive three 160-sample, 32 kHz buffers. The
      * previous cycle is processed, preserving the existing triple rotation. */
     for (u32 bus = 0; bus < 2; ++bus) {
       SND_AUX_CALLBACK callback = bus ? stp->auxBHandler : stp->auxAHandler;
       if (!callback || (bus && stp->type == SND_STUDIO_TYPE_DPL2))
         continue;
+      /* Capture current mixed/depop/studio input before the source buffer rotates.
+       * Source render completion and PCM publication follow this call. */
+      const s32 *raw = (bus ? stp->auxB : stp->auxA)[salAuxFrame];
+      if (fh_audio_game_capture_aux(st,bus,salPCBoundary(cycleTick,32000u),cycleFrames,
+          raw,raw+SAL_SAMPLES_PER_FRAME,raw+2*SAL_SAMPLES_PER_FRAME))
+        continue;
       s32 *work = (bus ? stp->auxB : stp->auxA)[(salAuxFrame + 2) % 3];
-      u32 rate = salPCMixRate();
+      u32 rate = 32000u;
       u64 previousTick = cycleTick >= 5 ? cycleTick - 5 : 0;
       u32 previousFrames =
           cycleTick ? (u32)(salPCBoundary(cycleTick, rate) - salPCBoundary(previousTick, rate))
@@ -656,7 +699,9 @@ void salCtrlDsp(s16 *dest) {
       info.data.bufferUpdate.left = legacyWork[0];
       info.data.bufferUpdate.right = legacyWork[1];
       info.data.bufferUpdate.surround = legacyWork[2];
+      u64 profileStart=fh_mix_begin(3);
       callback(SND_AUX_REASON_BUFFERUPDATE, &info, bus ? stp->auxBUser : stp->auxAUser);
+      fh_mix_stage(3,profileStart);
       for (u32 channel = 0; channel < 3; ++channel) {
         if (rate == 32000)
           memcpy(adaptedWork[channel], legacyWork[channel], sizeof(legacyWork[channel]));
@@ -677,13 +722,13 @@ void salCtrlDsp(s16 *dest) {
         s32 *studioR = studioMain + SAL_SAMPLES_PER_FRAME;
         s32 *studioS = studioMain + SAL_SAMPLES_PER_FRAME * 2;
         mixStudioOutput(studioL, studioR,
-                        stp->type == SND_STUDIO_TYPE_DPL2 && salPCChannels() == 2 ? NULL : studioS);
+                        stp->type == SND_STUDIO_TYPE_DPL2 && 2u == 2 ? NULL : studioS);
         for (u32 channel = 0; channel < 2; ++channel)
           for (u32 frame = 0; frame < cycleFrames; ++frame)
             mixBufferRear[channel][frame] += rearMain[st][salFrame][channel][frame];
       }
 
-      if (stp->type == SND_STUDIO_TYPE_DPL2 && salPCChannels() == 2) {
+      if (stp->type == SND_STUDIO_TYPE_DPL2 && 2u == 2) {
         s32 *dpl2Rear = stp->auxB[salAuxFrame];
         if (dpl2Rear != NULL)
           foldStereoToOutput(dpl2Rear, dpl2Rear + SAL_SAMPLES_PER_FRAME);
@@ -693,9 +738,10 @@ void salCtrlDsp(s16 *dest) {
 
   depopCursor = (depopCursor + cycleFrames) & (DEPOP_RING - 1);
   renderOffset = 0;
+  fh_source_cycle_complete = 1;
 
   if (dest) {
-    u32 channels = salPCChannels();
+    u32 channels = 2u;
     for (u32 i = 0; i < cycleFrames; ++i) {
       s16 *frame = dest + i * channels;
       frame[0] = clamp16(mixBufferL[i]);
@@ -724,10 +770,12 @@ bool salInitAi(SND_SOME_CALLBACK callback, u32 flags, u32 *outFreq) {
   memset(voiceResampler, 0, sizeof(voiceResampler));
   memset(lastContribution, 0, sizeof(lastContribution));
   memset(depop, 0, sizeof(depop));
+  memset(fh_depop_live,0,sizeof(fh_depop_live));
   depopCursor = renderOffset = 0;
+  fh_source_cycle_complete = 0;
   initResampleTables();
   synthInfo.numSamples = 32;
-  *outFreq = salPCMixRate();
+  *outFreq = 32000u;
   return true;
 }
 
@@ -788,6 +836,7 @@ void salActivateStudio(u8 studio, u32 isMaster, SND_STUDIO_TYPE type) {
   resetStudioHistory(studio);
   memset(rearMain[studio], 0, sizeof(rearMain[studio]));
   memset(depop[studio], 0, sizeof(depop[studio]));
+  memset(fh_depop_live[studio],0,sizeof(fh_depop_live[studio]));
   state->voiceRoot = NULL;
   state->alienVoiceRoot = NULL;
   state->state = DSP_STUDIO_STATE_ACTIVE;
@@ -806,6 +855,9 @@ void salInitHRTFBuffer(void) {}
 void salDeactivateVoice(DSPvoice *voice) {
   if (voice->state == DSP_VOICE_STATE_INACTIVE)
     return;
+  if(!fh_audio_source_stop((unsigned)(voice-dspVoice),
+      salPCBoundary(cycleTick,32000u)+
+      (fh_source_cycle_complete ? cycleFrames : renderOffset)))abort();
   retireContribution(voice);
   if (voice->prev)
     voice->prev->next = voice->next;

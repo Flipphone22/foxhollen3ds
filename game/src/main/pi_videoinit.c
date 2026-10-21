@@ -1,3 +1,4 @@
+#include "fh_input_tape.h"
 #include "dolphin/os/OSReport.h"
 #include "dolphin/PPCArch.h"
 #include "dolphin/mtx.h"
@@ -355,6 +356,7 @@ void waitNextFrame(void) {
         extern void fhDumpNearbyObjects(void);
         fhDumpNearbyObjects();
     }
+    timeDelta = fh_input_frame_delta(timeDelta);
     dt = timeDelta;
     if (dt > 0.1f) {
         oneOverTimeDelta = 1.0f / dt;
@@ -383,4 +385,5 @@ void waitNextFrame(void) {
     Camera_ApplyFullViewport();
     GXInvalidateVtxCache();
     GXInvalidateTexAll();
+    fh_input_clock_advance(timeDelta);
 }

@@ -1,3 +1,9 @@
+#include "fh_audio_worker.h"
+#include "fh_pica_movie.h"
+unsigned fh_movie_audio_buffers,fh_movie_audio_starved;
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 /*
  * THP attract-movie playback back end (AttractMoviePlayer gAttractMoviePlayer,
  * attract_movie.h). Three jobs:
@@ -16,6 +22,7 @@
  *    counters and the THP frame rate, when the next video frame is due.
  */
 #include "dolphin/ai.h"
+#include "fh_audio_cache.h"
 #include "dolphin/os.h"
 #include "dolphin/vi.h"
 #include "main/model.h"
@@ -92,6 +99,8 @@ void THPPlayerDrawCurrentFrame(void* yBuf, void* uBuf, void* vBuf, u32 width, u3
     GXSetTevSwapMode(GX_TEVSTAGE0, GX_TEV_SWAP0, GX_TEV_SWAP0);
     GXInitTexObj(&rgbTexObj, rgbTexture, width, height, GX_TF_RGBA8_PC, GX_CLAMP, GX_CLAMP, GX_FALSE);
     GXInitTexObjLOD(&rgbTexObj, GX_NEAR, GX_NEAR, 0.0f, 0.0f, 0.0f, GX_FALSE, GX_FALSE, GX_ANISO_1);
+    if (fh_minimal_enabled)
+        fh_minimal_movie_active=fh_gx_texture_view(&rgbTexObj,&fh_minimal_movie_texture);
     GXLoadTexObj(&rgbTexObj, GX_TEXMAP0);
     return;
 }
@@ -152,7 +161,7 @@ static void AttractMovieAudio_Mix(s16* destination, s16* source, u32 sampleCount
             for (;;) {
                 do {
                     if (gAttractMoviePlayer.curAudioBuffer == NULL) {
-                        gAttractMoviePlayer.curAudioBuffer = (AttractMovieAudioBuffer*)PopDecodedAudioBuffer(0);
+                        gAttractMoviePlayer.curAudioBuffer = (AttractMovieAudioBuffer*)PopDecodedAudioBuffer(0);if(gAttractMoviePlayer.curAudioBuffer)fh_movie_audio_buffers++;else fh_movie_audio_starved++;
                         if (gAttractMoviePlayer.curAudioBuffer == NULL) {
                             memcpy(dst, src, cnt << 2);
                             return;
@@ -217,7 +226,7 @@ static void AttractMovieAudio_Mix(s16* destination, s16* source, u32 sampleCount
         for (;;) {
             do {
                 if (gAttractMoviePlayer.curAudioBuffer == NULL) {
-                    gAttractMoviePlayer.curAudioBuffer = (AttractMovieAudioBuffer*)PopDecodedAudioBuffer(0);
+                    gAttractMoviePlayer.curAudioBuffer = (AttractMovieAudioBuffer*)PopDecodedAudioBuffer(0);if(gAttractMoviePlayer.curAudioBuffer)fh_movie_audio_buffers++;else fh_movie_audio_starved++;
                     if (gAttractMoviePlayer.curAudioBuffer == NULL) {
                         memset(dst, 0, cnt << 2);
                         return;
@@ -283,10 +292,10 @@ void AttractMovieAudio_DmaCallback(void) {
                               (gAttractMovieAudioDmaBufferIndex * ATTRACT_MOVIE_AUDIO_DMA_BUFFER_SIZE)),
                   ATTRACT_MOVIE_AUDIO_DMA_BUFFER_SIZE);
         interrupts = OSEnableInterrupts();
-        AttractMovieAudio_Mix((s16*)(gAttractMovieAudioDmaBuffer +
+        fh_audio_movie_mix((s16*)(gAttractMovieAudioDmaBuffer +
                                      (gAttractMovieAudioDmaBufferIndex * ATTRACT_MOVIE_AUDIO_DMA_BUFFER_SIZE)),
-                              NULL, ATTRACT_MOVIE_AUDIO_DMA_SAMPLE_COUNT);
-        DCFlushRange(gAttractMovieAudioDmaBuffer +
+                              NULL, ATTRACT_MOVIE_AUDIO_DMA_SAMPLE_COUNT, AttractMovieAudio_Mix);
+        fh_audio_dma_flush(gAttractMovieAudioDmaBuffer +
                          (gAttractMovieAudioDmaBufferIndex * ATTRACT_MOVIE_AUDIO_DMA_BUFFER_SIZE),
                      ATTRACT_MOVIE_AUDIO_DMA_BUFFER_SIZE);
         OSRestoreInterrupts(interrupts);
@@ -308,12 +317,12 @@ void AttractMovieAudio_DmaCallback(void) {
                   ATTRACT_MOVIE_AUDIO_DMA_BUFFER_SIZE);
         interrupts = OSEnableInterrupts();
         if (gAttractMovieAudioMixSourceAddr != 0) {
-            DCInvalidateRange((void*)gAttractMovieAudioMixSourceAddr, ATTRACT_MOVIE_AUDIO_DMA_BUFFER_SIZE);
+            fh_audio_dma_invalidate((void*)gAttractMovieAudioMixSourceAddr, ATTRACT_MOVIE_AUDIO_DMA_BUFFER_SIZE);
         }
-        AttractMovieAudio_Mix((s16*)(gAttractMovieAudioDmaBuffer +
+        fh_audio_movie_mix((s16*)(gAttractMovieAudioDmaBuffer +
                                      (gAttractMovieAudioDmaBufferIndex * ATTRACT_MOVIE_AUDIO_DMA_BUFFER_SIZE)),
-                              (s16*)gAttractMovieAudioMixSourceAddr, ATTRACT_MOVIE_AUDIO_DMA_SAMPLE_COUNT);
-        DCFlushRange(gAttractMovieAudioDmaBuffer +
+                              (s16*)gAttractMovieAudioMixSourceAddr, ATTRACT_MOVIE_AUDIO_DMA_SAMPLE_COUNT, AttractMovieAudio_Mix);
+        fh_audio_dma_flush(gAttractMovieAudioDmaBuffer +
                          (gAttractMovieAudioDmaBufferIndex * ATTRACT_MOVIE_AUDIO_DMA_BUFFER_SIZE),
                      ATTRACT_MOVIE_AUDIO_DMA_BUFFER_SIZE);
         OSRestoreInterrupts(interrupts);
@@ -414,3 +423,10 @@ AttractMoviePlayer gAttractMoviePlayer;
 char gPicMenuDvdReadBuffer[0x40];
 OSMessageQueue gAttractMoviePrepareReadyQueue;
 OSMessageQueue gAttractMovieSpentTextureSetQueue;
+
+int fh_pica_game_movie_matches(const void *callback){return callback==(const void*)AttractMovie_DrawTextureCallback;}
+const void *fh_pica_game_movie_pixels(void){
+    extern void *fhTHPVideoGetRGB(const void*);
+    if(gAttractMovieState!=2 || !gAttractMoviePlayer.curTextureSet)return NULL;
+    return fhTHPVideoGetRGB(gAttractMoviePlayer.curTextureSet->yTexture);
+}

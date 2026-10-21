@@ -1,0 +1,81 @@
+; Native lightning: 40 segments/160 immutable vertices per batch.
+.fvec matrix[4], screen, texscale, tint, points[80]
+.constf constants(0.0,1.0,0.0000000001,0.0)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0
+.proc main
+    mova a0.x, v0.x
+    mov r0, points[a0.x]
+    mov r1, points[a0.x+1]
+    mov r12.x, r0.w
+    mov r0.w, constants.y
+    mov r1.w, constants.y
+    dp4 r4.x, matrix[0], r0
+    dp4 r4.y, matrix[1], r0
+    dp4 r4.z, matrix[2], r0
+    dp4 r4.w, matrix[3], r0
+    dp4 r5.x, matrix[0], r1
+    dp4 r5.y, matrix[1], r1
+    dp4 r5.z, matrix[2], r1
+    dp4 r5.w, matrix[3], r1
+    add r6.x, r4.z, r4.w
+    add r6.y, r5.z, r5.w
+    max r6.z, r6.x, r6.y
+    cmp constants.x, gt, gt, r6.z
+    ifc cmp.x
+        ; Fully behind the near plane: bounded degenerate primitive.
+        mov r4, constants.xxxy
+        mov r5, constants.xxxy
+        mov r12.x, constants.x
+    .else
+        add r7, r5, -r4
+        cmp constants.x, gt, gt, r6.x
+        ifc cmp.x
+            add r8.x, r6.x, -r6.y
+            rcp r8.x, r8.x
+            mul r8.x, r8.x, r6.x
+            mad r4, r7, r8.x, r4
+        .end
+        cmp constants.x, gt, gt, r6.y
+        ifc cmp.x
+            add r8.x, r6.y, -r6.x
+            rcp r8.x, r8.x
+            mul r8.x, r8.x, r6.y
+            mad r5, -r7, r8.x, r5
+        .end
+    .end
+    rcp r6.x, r4.w
+    rcp r6.y, r5.w
+    mul r7.xy, r4, r6.x
+    mul r8.xy, r5, r6.y
+    add r7.xy, r8, -r7
+    mul r7.xy, screen, r7
+    mov r7.z, constants.x
+    dp3 r8.x, r7, r7
+    cmp constants.z, gt, gt, r8.x
+    ifc cmp.x
+        mov r7.xy, constants.yx
+    .else
+        rsq r8.x, r8.x
+        mul r7.xy, r7, r8.x
+    .end
+    ; Perpendicular in unrotated native pixels; width is already pixel-scaled.
+    mov r8.x, -r7.y
+    mov r8.y, r7.x
+    mul r8.xy, r8, r12.x
+    mul r8.xy, screen.zw, r8
+    mul r8.xy, r8, v0.z
+    add r9, r5, -r4
+    mad r9, r9, v0.y, r4
+    mad r9.xy, r8, r9.w, r9
+    mov outpos.x, r9.y
+    mov outpos.y, -r9.x
+    mov outpos.zw, r9
+    mov outcolor, tint
+    mul r10.x, texscale.x, v0.w
+    mov r10.y, constants.y
+    mov r10.zw, constants.xxxy
+    mov outuv, r10
+    end
+.end

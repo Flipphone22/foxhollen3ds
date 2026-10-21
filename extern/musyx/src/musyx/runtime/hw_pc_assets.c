@@ -6,9 +6,9 @@
 #include <string.h>
 
 typedef struct PCField {
-  size_t offset;
-  u32 value;
-  u8 width;
+  struct PCField *next;
+  size_t index;
+  u8 tags[4096];
 } PCField;
 
 typedef struct PCReader {
@@ -16,7 +16,8 @@ typedef struct PCReader {
   const char *section;
   SND_PC_ASSET_ERROR *error;
   PCField *fields;
-  size_t count, capacity, extent;
+  PCField *last;
+  size_t extent;
   bool failed;
 } PCReader;
 
@@ -46,91 +47,7 @@ static const u8 *bytes(PCReader *r, size_t offset, size_t count) {
   return (const u8 *)r->span.data + offset;
 }
 
-static bool field(PCReader *r, size_t offset, u8 width, u32 value) {
-  if (r->failed)
-    return false;
-  if (r->count == r->capacity) {
-    size_t capacity = r->capacity ? r->capacity * 2 : 128;
-    if (capacity > SIZE_MAX / sizeof(PCField))
-      return fail(r, offset, "field table too large");
-    PCField *storage = salMalloc(capacity * sizeof(*storage));
-    if (!storage)
-      return fail(r, offset, "out of memory");
-    if (r->count)
-      memcpy(storage, r->fields, r->count * sizeof(*storage));
-    if (r->fields)
-      salFree(r->fields);
-    r->fields = storage;
-    r->capacity = capacity;
-  }
-  r->fields[r->count++] = (PCField){offset, value, width};
-  return true;
-}
-
-static u16 word(PCReader *r, size_t offset) {
-  const u8 *p = bytes(r, offset, 2);
-  u16 value = p ? salPCReadBE16(p) : 0;
-  field(r, offset, 2, value);
-  return value;
-}
-
-static u32 dword(PCReader *r, size_t offset) {
-  const u8 *p = bytes(r, offset, 4);
-  u32 value = p ? salPCReadBE32(p) : 0;
-  field(r, offset, 4, value);
-  return value;
-}
-
-static bool raw(PCReader *r, size_t offset, size_t length) {
-  const u8 *p = bytes(r, offset, length);
-  if (!p)
-    return false;
-  /* Recording byte payloads also detects aliases interpreted as incompatible
-   * numeric fields (e.g. a curve aliased to big-endian macro words). */
-  for (size_t i = 0; i < length; ++i)
-    if (!field(r, offset + i, 1, p[i]))
-      return false;
-  return true;
-}
-
-static int compareField(const void *a, const void *b) {
-  const PCField *lhs = a;
-  const PCField *rhs = b;
-  if (lhs->offset != rhs->offset)
-    return lhs->offset < rhs->offset ? -1 : 1;
-  return (int)lhs->width - rhs->width;
-}
-
-static void *materialize(PCReader *r) {
-  if (r->failed)
-    return NULL;
-  qsort(r->fields, r->count, sizeof(*r->fields), compareField);
-  for (size_t i = 1; i < r->count; ++i) {
-    const PCField *a = &r->fields[i - 1];
-    const PCField *b = &r->fields[i];
-    if (b->offset < a->offset + a->width &&
-        (a->offset != b->offset || a->width != b->width || a->value != b->value)) {
-      fail(r, b->offset, "conflicting field interpretations");
-      return NULL;
-    }
-  }
-  u8 *output = salMalloc(r->extent ? r->extent : 1);
-  if (!output) {
-    fail(r, 0, "out of memory");
-    return NULL;
-  }
-  memcpy(output, r->span.data, r->extent);
-  for (size_t i = 0; i < r->count; ++i) {
-    const PCField *f = &r->fields[i];
-    if (f->width == 4) {
-      memcpy(output + f->offset, &f->value, 4);
-    } else if (f->width == 2) {
-      u16 value = (u16)f->value;
-      memcpy(output + f->offset, &value, 2);
-    }
-  }
-  return output;
-}
+#include "fh_audio_asset_fields.h"
 
 static bool idList(PCReader *r, size_t offset) {
   for (u32 count = 0; count <= 65536 && !r->failed; ++count) {
@@ -602,7 +519,7 @@ bool salPCDecodeArrangement(SND_PC_SPAN input, void **result, size_t *size,
       *size = reader.extent;
   }
   if (reader.fields)
-    salFree(reader.fields);
+    freeFields(&reader);
   return ok;
 }
 
@@ -614,7 +531,7 @@ bool sndPCValidateArrangement(SND_PC_SPAN input, SND_PC_ASSET_ERROR *error) {
   return true;
 }
 
-void salPCFreeGroupData(MusyPCGroupData *data) {
+void salPCFreeGroupDataUnshared(MusyPCGroupData *data) {
   if (data->project)
     salFree(data->project);
   if (data->pool)
@@ -624,7 +541,7 @@ void salPCFreeGroupData(MusyPCGroupData *data) {
   memset(data, 0, sizeof(*data));
 }
 
-bool salPCDecodeGroup(const SND_PC_GROUP_ASSETS *assets, MusyPCGroupData *result,
+bool salPCDecodeGroupUnshared(const SND_PC_GROUP_ASSETS *assets, MusyPCGroupData *result,
                       SND_PC_ASSET_ERROR *error) {
   memset(result, 0, sizeof(*result));
   if (error)
@@ -650,11 +567,13 @@ bool salPCDecodeGroup(const SND_PC_GROUP_ASSETS *assets, MusyPCGroupData *result
   }
   for (u32 i = 0; i < 3; ++i)
     if (readers[i].fields)
-      salFree(readers[i].fields);
+      freeFields(&readers[i]);
   if (!ok)
-    salPCFreeGroupData(result);
+    salPCFreeGroupDataUnshared(result);
   return ok;
 }
+
+#include "fh_audio_asset_batch_impl.h"
 
 bool sndPCValidateGroup(const SND_PC_GROUP_ASSETS *assets, SND_PC_ASSET_ERROR *error) {
   MusyPCGroupData decoded;

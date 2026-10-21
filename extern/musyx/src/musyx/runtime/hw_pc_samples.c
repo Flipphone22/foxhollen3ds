@@ -3,12 +3,22 @@
 #include "hw_pc_assets.h"
 #include "musyx/hardware.h"
 #include <string.h>
+#include "fh_audio_sample_registry.h"
+static void fh_register_sample(const SDIR_TAB *owner,const SDIR_DATA *entry) {
+  if (!fh_audio_native_samples) return;
+  SAMPLE_INFO sample={.info=entry->header.info,.addr=entry->addr,
+    .length=entry->header.length&0xffffff,.compType=entry->header.length>>24,
+    .loop=entry->header.loopOffset,.loopLength=entry->header.loopLength};
+  if (entry->extraData) sample.extraData=(u8 *)owner->data+entry->extraData;
+  (void)fh_audio_sample_registry_prepare(fh_audio_native_samples,entry,&sample);
+}
 
 static SDIR_TAB directories[128];
 static u16 directoryCount;
 static SDIR_TAB *uploading;
 
 void salPCResetSampleData(void) {
+  if (fh_audio_native_samples) (void)fh_audio_sample_registry_reset(fh_audio_native_samples);
   memset(directories, 0, sizeof(directories));
   directoryCount = 0;
   uploading = NULL;
@@ -98,6 +108,7 @@ bool dataAddSampleReference(u16 id) {
   if (!entry->addr)
     return false;
   entry->ref_cnt = 1;
+  fh_register_sample(uploading,entry);
   return true;
 }
 
@@ -106,6 +117,7 @@ bool dataRemoveSampleReference(u16 id) {
   if (!entry)
     return false;
   if (--entry->ref_cnt == 0) {
+    if (fh_audio_native_samples) (void)fh_audio_sample_registry_forget(fh_audio_native_samples,entry);
     hwRemoveSample(&entry->header, entry->addr);
     entry->addr = NULL;
   }
@@ -126,5 +138,6 @@ s32 dataGetSample(u16 id, SAMPLE_INFO *sample) {
   sample->loopLength = entry->header.loopLength;
   if (entry->extraData)
     sample->extraData = (u8 *)owner->data + entry->extraData;
+  fh_register_sample(owner,entry);
   return 0;
 }

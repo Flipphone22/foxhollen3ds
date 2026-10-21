@@ -1,3 +1,4 @@
+#include "fh_audio_asset_batch.h"
 #include "main/audio/music.h"
 #include "main/audio_internal.h"
 #include "main/attract_movie.h"
@@ -699,12 +700,14 @@ int audioInit(void) {
     if (!gAudioSfxGroupsReady && (gAudioCompletedLoadFlags & AUDIO_LOAD_S_POOL) &&
         (gAudioCompletedLoadFlags & AUDIO_LOAD_S_PROJECT) && (gAudioCompletedLoadFlags & AUDIO_LOAD_S_POOL) &&
         (gAudioCompletedLoadFlags & AUDIO_LOAD_S_SAMPLE_DIR) && (gAudioCompletedLoadFlags & AUDIO_LOAD_S_SAMPLE_BUF)) {
+        fh_audio_asset_batch_begin();
         for (group = 1; group <= 0x37; group++) {
             if (sndPushGroup(gAudioStarfoxSProjectDataHandle, group, gAudioStarfoxSSampleBufferHandle,
                              gAudioStarfoxSSampleDirectoryHandle, gAudioStarfoxSPoolDataHandle) == 0) {
                 OSReport("sndPushGroup failed on group %d\n", group);
             }
         }
+        fh_audio_asset_batch_end();
         delay = mmSetFreeDelay(0);
         mm_free(gAudioStarfoxSSampleBufferHandle);
         mmSetFreeDelay(delay);

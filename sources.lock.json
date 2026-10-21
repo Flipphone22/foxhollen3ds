@@ -1,0 +1,42 @@
+{
+  "review_date": "2026-10-02",
+  "sources": {
+    "melee-3ds": {
+      "url": "https://github.com/2gifts/melee-3ds.git",
+      "branch": "3ds",
+      "commit": "c2ebe7c769b3287f2b3748173e8fe5ec24ef408e",
+      "path": "reference/melee-3ds"
+    },
+    "foxhollow": {
+      "url": "https://github.com/JackPriceBurns/foxhollow.git",
+      "branch": "main",
+      "commit": "33f3079b74649aacdebf7dfd311c6ee751b3fc97",
+      "path": "reference/foxhollow"
+    },
+    "azahar-source-review": {
+      "url": "https://github.com/azahar-emu/azahar.git",
+      "branch": "master",
+      "commit": "662d412123305a9f4be94dd3dc73ddf91a18c55e",
+      "status": "Selected files reviewed remotely; no emulator installed or built"
+    },
+    "tex3ds": {
+      "url": "https://github.com/devkitPro/tex3ds.git",
+      "tag": "v2.3.0",
+      "commit": "37220c696e873812df41af62d1db0b20c66661fe",
+      "path": "reference/tex3ds",
+      "usage": "Pinned host texture oracle; only separately ZLIB-licensed rg_etc1 codec adapted under native-3ds/vendor/rg_etc1 for startup preparation. Desktop frontend is not linked."
+    },
+    "meshoptimizer": {
+      "url": "https://github.com/zeux/meshoptimizer.git",
+      "tag": "v1.0",
+      "commit": "73583c335e541c139821d0de2bf5f12960a04941",
+      "path": "reference/meshoptimizer"
+    },
+    "citro3d": {
+      "url": "https://github.com/devkitPro/citro3d.git",
+      "tag": "v1.7.1",
+      "commit": "9f21cf7b380ce6f9e01a0420f19f0763e5443ca7",
+      "path": "reference/citro3d"
+    }
+  }
+}

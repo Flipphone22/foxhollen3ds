@@ -1,3 +1,8 @@
+#include "fh_minimal_graphics.h"
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
 #include "dolphin/os.h"
 #include "dolphin/gx/GXTexture.h"
 #include "dolphin/gx/GXGet.h"
@@ -75,7 +80,7 @@ void runLoadingScreens(void)
         }
         colorBuf.bytes[3] = alpha;
         color = colorBuf.word;
-        hudDrawColored(textureSlot, 0x85, 0xaa, &color, 0x100, 0);
+        fh_pica_game_hud_colored(textureSlot, 0x85, 0xaa, &color, 0x100, 0);
     }
     else if (gTitleScreenInitLoadingFrameCounter < 0x1e0)
     {
@@ -175,6 +180,13 @@ static inline void initLoadingScreenTexturesBody(void)
         GXInitTexObjLOD(texObj, textureHeader->minFilter, textureHeader->magFilter, lbl_803E1CF0, lbl_803E1CF0,
                         lbl_803E1CF0, 0, 0, 0);
         GXInitTexObjUserData(texObj, textureHeader);
+        if(fh_pica_scene_actors){
+            FhTexture image;
+            if(!fh_gx_texture_view(texObj,&image))fh_platform_panic("PICA loading image descriptor");
+            fh_pica_hud_release(textureHeader);
+            fh_pica_hud_load(textureHeader,&image);
+        }
+
         textureFormat = GXGetTexObjFmt(texObj);
         textureWidth = GXGetTexObjWidth(texObj);
         textureHeight = GXGetTexObjHeight(texObj);
@@ -243,3 +255,10 @@ UiResourceDescriptor TitleScreenInit_funcs = {
         gTitleScreenInitUiResourceDraw,
     },
 };
+
+void fh_pica_game_hud_loading_done(void){
+    if(fh_pica_scene_actors){
+        const void *owners[3]={gTitleScreenInitLoadingTextures[0],gTitleScreenInitLoadingTextures[1],gTitleScreenInitLoadingTextures[2]};
+        fh_pica_hud_release_many(owners,3);
+    }
+}

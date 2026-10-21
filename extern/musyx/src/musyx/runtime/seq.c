@@ -511,8 +511,18 @@ static void SetTickDelta(SEQ_SECTION *section, u32 deltaTime) {
   float tickDelta = (float)section->bpm * (float)deltaTime * (1.f / (40960000.f));
   tickDelta *= section->speed * (1.f / 256.f);
 
+  /* Nonnegative finite increments in the defined signed32 output range.
+   * Conversion gives floor; subtracting that integer is exact (Sterbenz for
+   * x>=1, subtraction of zero below1). Scaling by 2^16 is exact too. Keep the
+   * original path outside that range; do not alter tempo or clock arithmetic. */
+  if (tickDelta >= 0.f && tickDelta < 2147483648.f) {
+    u32 whole = (u32)tickDelta;
+    section->tickDelta[section->timeIndex].low = (u32)((tickDelta - (float)whole) * 65536.f);
+    section->tickDelta[section->timeIndex].high = (s32)whole;
+  } else {
   section->tickDelta[section->timeIndex].low = fmodf(tickDelta * 65536.f, 65536.f);
   section->tickDelta[section->timeIndex].high = floorf(tickDelta);
+  }
 }
 
 static void HandleMasterTrack(u8 secIndex) {

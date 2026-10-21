@@ -1111,3 +1111,37 @@ Sky2DllInterface sky2_funcs = {
 };
 
 f32 lbl_8039A7B8[0x18];
+
+unsigned fh_pica_game_sky_tint(void)
+{
+    static unsigned tint;
+    SkySlotAnim* s = (SkySlotAnim*)gSky2State;
+    f32 v;
+    int alpha;
+
+    if (s != NULL)
+    {
+        if (gSky2TintDisabled == 0 && (s->flags4 & 1) == 0)
+        {
+            v = s->fogNear;
+            if (v < 0.0f)
+            {
+                alpha = 255;
+            }
+            else if (v > 15.0f)
+            {
+                alpha = 0;
+            }
+            else
+            {
+                alpha = (int)(255.0f - 255.0f * (v / 15.0f));
+            }
+            tint=(u8)s->colorR|((unsigned)(u8)s->colorG<<8)|((unsigned)(u8)s->colorB<<16)|((unsigned)(u8)alpha<<24);
+        }
+        else
+        {
+            tint=0x00ffffff;
+        }
+    }
+    return tint;
+}

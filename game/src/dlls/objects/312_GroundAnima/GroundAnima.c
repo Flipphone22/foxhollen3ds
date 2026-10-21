@@ -1,3 +1,4 @@
+#include "fh_pica_scene.h"
 /* Lets Tricky dig a tagged patch of map geometry to uncover a buried collectible. */
 #include "dlls/objects/312_GroundAnima.h"
 #include "dlls/objects/237.h"
@@ -182,6 +183,7 @@ void GroundAnimator_free(GameObject* obj, int onlySelf) {
                     }
                 }
             }
+            fh_pica_world_positions_changed(block);
         }
     }
     if (state->vertexWeights != NULL) {
@@ -343,6 +345,7 @@ void GroundAnimator_update(GameObject* obj) {
                 }
             }
             DCStoreRangeNoSync(block->vertices, block->vertexCount * sizeof(s16[3]));
+    fh_pica_world_positions_changed(block);
         }
     }
 

@@ -1,3 +1,4 @@
+#include "fh_ground_result.h"
 /*
  * Game-bit-driven map-block reaction animator. It toggles matching
  * polygon groups, shaders, and collision lines.
@@ -45,6 +46,8 @@ void HitAnimator_applyBlockState(MapBlockData* block, GameObject* obj, HitAnimat
             }
         }
     }
+
+    fh_native_ground_changed();
 }
 
 int HitAnimator_getExtraSize(void) {

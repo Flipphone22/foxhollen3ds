@@ -1,0 +1,24 @@
+; Native UI models: resident skinning and direct UV arithmetic. Same c0..95
+; ABI/output registers as the scene program; no fur/specular/lighting branches.
+.fvec view[3], projection[4], tint, uvscale[2], bones[66], decode
+.fvec ambient, light_position[8], light_color[8], fog_distance_scale
+.constf constants(0.0,1.0,0.000000001,0.5)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0.xy
+.out - texcoord0w outuv.z
+.out outsecond texcoord1
+.out outview view
+.out outquat normalquat
+.out outfog texcoord2
+.proc main
+    mov outpos.xyw, v0
+    dp4 outpos.z, view[0], v0
+    mov outcolor, constants.yyyy
+    mov outuv, constants.xxxy
+    mov outsecond, constants.xxxy
+    mov outview, constants.xxxy
+    mov outquat, constants.xxxy
+    mov outfog, constants.xxxy
+    end
+.end

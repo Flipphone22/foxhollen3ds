@@ -1,3 +1,11 @@
+#include "fh_pica_lightning.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_height_fog.h"
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
 #include "main/map_block.h"
 #include "main/texture.h"
 #include "track/intersect_depth_state.h"
@@ -227,36 +235,9 @@ void blendTextures(Texture* src1, Texture* src2, f32 blend, Texture* dst)
 
 void updateHeavyFogTexture(int intensity)
 {
-    u8* cache;
-    u32 hi, mid;
-    u32 scaled;
-    u32 j;
-    int row;
-
-    cache = getCache();
-    for (row = 0; (u32)row < 0x40; row++)
-    {
-        j = 0;
-        hi = ((u32)row >> 2) << 8;
-        mid = (row & 3) << 3;
-        scaled = (row + intensity) * 0xff;
-        for (; j < 0x40; j++)
-        {
-            int idx;
-            u32 s;
-            s = (j & 7) + ((j >> 3) << 5);
-            s += mid;
-            idx = s + hi;
-            s = scaled;
-            if (s > 0x3fc0)
-            {
-                s = 0x3fc0;
-            }
-            cache[idx] = (s * j) >> 12;
-        }
-    }
-    memcpyToCache((u8*)gNewShadowHeavyFogTexture + sizeof(Texture), cache, 0);
     gNewShadowHeavyFogIntensity = intensity;
+    fh_pica_height_fog_source_updates++;
+
 }
 
 Camera* gNewShadowCurrentViewSlot;
@@ -290,7 +271,7 @@ Texture* gNewShadowReflectionTexture;
 u8 gNewShadowCasterCount;
 
 u8 gShadowCastModeTable[8] = {0xFF, 7, 6, 5, 4, 3, 2, 1};
-f32 gStandardAspectRatio = 1.3333334f;
+f32 gStandardAspectRatio = (400.0f / 240.0f);
 
 
 /* Linear search by pointer identity through the shadow entry table.
@@ -825,7 +806,8 @@ void renderShadows(int unused0, int unused1, int unused2)
                         gxSetZMode_(1, GX_LEQUAL, 1);
                         GXSetTexCopySrc(0, 0, screenW, screenW);
                         GXSetTexCopyDst(w, w, GX_CTF_R4, GX_TRUE);
-                        GXCopyTex(*texture + 1, GX_TRUE);
+                        extern void FHCopyShadowR4(void*, GXBool);
+                        FHCopyShadowR4(*texture + 1, GX_TRUE);
                         castSlot->texture = *texture;
                         texIdx++;
                     }
@@ -1123,10 +1105,12 @@ void updateReflectionTextures(void)
 {
     GXSetTexCopySrc(0, 0, 0x280, 0x1e0);
     GXSetTexCopyDst(0x140, 0xf0, GX_TF_RGB565, GX_TRUE);
-    GXCopyTex((char*)gNewShadowReflectionTexture + sizeof(Texture), GX_FALSE);
+    extern void FHCopyReflectionTex(void*, GXBool);
+    FHCopyReflectionTex((char*)gNewShadowReflectionTexture + sizeof(Texture), GX_FALSE);
     GXSetTexCopySrc(0, 0, 0x280, 0x1e0);
     GXSetTexCopyDst(0x140, 0xf0, GX_TF_Z8, GX_TRUE);
-    GXCopyTex((char*)gNewShadowReflectionTexture2 + sizeof(Texture), GX_FALSE);
+    extern void FHCopyReflectionDepth(void*, GXBool);
+    FHCopyReflectionDepth((char*)gNewShadowReflectionTexture2 + sizeof(Texture), GX_FALSE);
     if (gNewShadowReflectionTexture->preloaded != 0)
     {
         GXTexObj* obj = textureGetGXTexObj(gNewShadowReflectionTexture);
@@ -1432,6 +1416,7 @@ void newShadowsInitProceduralTextures(void)
                 }
             }
             DCFlushRange(gNewShadowNoiseTexFrames[frame] + 1, gNewShadowNoiseTexFrames[frame]->dataSize);
+            fh_pica_game_hud_loaded(gNewShadowNoiseTexFrames[frame]);
         }
 
     }
@@ -1767,6 +1752,7 @@ void allocLotsOfTextures(void)
     gNewShadowDiskTexture = textureAlloc(0x20, 0x20, 1, 0, 0, 0, 0, 1, 1);
     fillDiskTexture();
     DCFlushRange(gNewShadowDiskTexture + 1, gNewShadowDiskTexture->dataSize);
+    fh_pica_game_hud_loaded(gNewShadowDiskTexture);
 
     gNewShadowSmallDiskTexture = textureAlloc(0x10, 0x10, 1, 0, 0, 0, 0, 1, 1);
     fillSmallDiskTexture();
@@ -1921,6 +1907,8 @@ void allocLotsOfTextures(void)
     gNewShadowLightningTexture = textureAlloc(0x20, 4, 1, 0, 0, 0, 0, 1, 1);
     fillLightningTexture();
     DCFlushRange((u8*)gNewShadowLightningTexture + sizeof(Texture), gNewShadowLightningTexture->dataSize);
+    fh_pica_lightning_load();
+    fh_pica_game_hud_loaded(gNewShadowLightningTexture);
 
     gNewShadowRingTexture = textureAlloc(0x80, 0x80, 1, 0, 0, 1, 1, 1, 1);
     fillRingTexture();

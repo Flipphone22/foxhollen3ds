@@ -1,0 +1,455 @@
+.fvec model[30], transform[4], color0[4], color1[4], color_bias, color_scale
+.fvec light_normal[3], lights[40], light_ambient
+.fvec normal_texgen_post[3]
+.fvec fur_shell
+.constf constants(0.0,1.0,0.0,0.0)
+.bool raw_transform, affine_color, spot_lighting, light0_active, light1_active, light2_active, light3_active, light4_active, light5_active, light6_active, light7_active, model_normal, normal_texgen, texgen_unit0, texgen_unit1, texgen_unit2
+.out outpos position
+.out outcolor color
+.out outuv texcoord0
+.out outq texcoord0w
+.out outuv1 texcoord1
+.out outuv2 texcoord2
+.proc main
+    ifu raw_transform
+        mov r1.x, v5.x
+        cmp constants.x, le, le, r1.x
+        ifc cmp.x
+            mova a0.x, r1.x
+            dp4 r0.x, model[a0.x], v0
+            dp4 r0.y, model[a0.x+1], v0
+            dp4 r0.z, model[a0.x+2], v0
+            mov r0.w, v0.w
+            dp4 outpos.x, transform[0], r0
+            dp4 outpos.y, transform[1], r0
+            dp4 outpos.z, transform[2], r0
+            dp4 outpos.w, transform[3], r0
+        .else
+            mov outpos, v0
+        .end
+    .else
+        mov outpos, v0
+    .end
+    mov r4, v1
+    ifu spot_lighting
+        mov r3.x, v5.x
+        cmp constants.x, le, le, r3.x
+        ifc cmp.x
+        mov r1, r0
+        ifu model_normal
+            dp3 r2.x, model[a0.x], v6
+            dp3 r2.y, model[a0.x+1], v6
+            dp3 r2.z, model[a0.x+2], v6
+        .else
+            mov r3.x, lights[4].w
+            cmp constants.x, lt, lt, r3.x
+            ifc cmp.x
+            dp3 r2.x, lights[a0.x+10], v6
+            dp3 r2.y, lights[a0.x+11], v6
+            dp3 r2.z, lights[a0.x+12], v6
+            .else
+            dp3 r2.x, light_normal[0], v6
+            dp3 r2.y, light_normal[1], v6
+            dp3 r2.z, light_normal[2], v6
+            .end
+        .end
+        dp3 r3.x, r2, r2
+        cmp constants.x, lt, lt, r3.x
+        ifc cmp.x
+            rsq r3.x, r3.x
+            mul r2.xyz, r2, r3.x
+        .end
+        mov r4, light_ambient
+        ; Optional model lighting LOD. All dropped point lights remain as
+        ; live first-order RGB fill; normal palette uses other uniform rows.
+        mov r3.x, lights[0].w
+        cmp constants.x, lt, lt, r3.x
+        ifc cmp.x
+            dp3 r5.x, light_normal[0], r2
+            dp3 r5.y, light_normal[1], r2
+            dp3 r5.z, light_normal[2], r2
+            mov r6.x, lights[5].w
+            mov r6.y, lights[6].w
+            mov r6.z, lights[7].w
+            add r5.xyz, r5, r6
+            max r5.xyz, constants.x, r5
+            add r4.xyz, r4, r5
+        .end
+        ifu light0_active
+            add r6.xyz, lights[0], -r1
+            dp3 r3.x, r6, r6
+            mov r3.yz, constants.xx
+            cmp constants.x, lt, lt, r3.x
+            ifc cmp.x
+                rsq r3.y, r3.x
+                mul r6.xyz, r6, r3.y
+                mul r3.z, r3.x, r3.y
+            .end
+            dp3 r8.x, r2, r6
+            max r8.x, constants.x, r8.x
+            mov r10.x, constants.y
+            dp3 r10.y, lights[1], r6
+            max r10.y, constants.x, r10.y
+            mul r10.z, r10.y, r10.y
+            dp3 r8.y, lights[3], r10
+            max r8.y, constants.x, r8.y
+            mov r12.x, constants.y
+            mov r12.y, r3.z
+            mov r12.z, r3.x
+            dp3 r8.z, lights[4], r12
+            mov r8.w, constants.x
+            cmp constants.x, lt, lt, r8.z
+            ifc cmp.x
+                rcp r8.w, r8.z
+                mul r8.w, r8.w, r8.y
+            .end
+            mov r5, lights[2]
+            mul r5.xyz, r5, r8.x
+            mul r5.xyz, r5, r8.w
+            add r4.xyz, r4, r5
+        .end
+        ifu light1_active
+            add r6.xyz, lights[5], -r1
+            dp3 r3.x, r6, r6
+            mov r3.yz, constants.xx
+            cmp constants.x, lt, lt, r3.x
+            ifc cmp.x
+                rsq r3.y, r3.x
+                mul r6.xyz, r6, r3.y
+                mul r3.z, r3.x, r3.y
+            .end
+            dp3 r8.x, r2, r6
+            max r8.x, constants.x, r8.x
+            mov r10.x, constants.y
+            dp3 r10.y, lights[6], r6
+            max r10.y, constants.x, r10.y
+            mul r10.z, r10.y, r10.y
+            dp3 r8.y, lights[8], r10
+            max r8.y, constants.x, r8.y
+            mov r12.x, constants.y
+            mov r12.y, r3.z
+            mov r12.z, r3.x
+            dp3 r8.z, lights[9], r12
+            mov r8.w, constants.x
+            cmp constants.x, lt, lt, r8.z
+            ifc cmp.x
+                rcp r8.w, r8.z
+                mul r8.w, r8.w, r8.y
+            .end
+            mov r5, lights[7]
+            mul r5.xyz, r5, r8.x
+            mul r5.xyz, r5, r8.w
+            add r4.xyz, r4, r5
+        .end
+        ifu light2_active
+            add r6.xyz, lights[10], -r1
+            dp3 r3.x, r6, r6
+            mov r3.yz, constants.xx
+            cmp constants.x, lt, lt, r3.x
+            ifc cmp.x
+                rsq r3.y, r3.x
+                mul r6.xyz, r6, r3.y
+                mul r3.z, r3.x, r3.y
+            .end
+            dp3 r8.x, r2, r6
+            max r8.x, constants.x, r8.x
+            mov r10.x, constants.y
+            dp3 r10.y, lights[11], r6
+            max r10.y, constants.x, r10.y
+            mul r10.z, r10.y, r10.y
+            dp3 r8.y, lights[13], r10
+            max r8.y, constants.x, r8.y
+            mov r12.x, constants.y
+            mov r12.y, r3.z
+            mov r12.z, r3.x
+            dp3 r8.z, lights[14], r12
+            mov r8.w, constants.x
+            cmp constants.x, lt, lt, r8.z
+            ifc cmp.x
+                rcp r8.w, r8.z
+                mul r8.w, r8.w, r8.y
+            .end
+            mov r5, lights[12]
+            mul r5.xyz, r5, r8.x
+            mul r5.xyz, r5, r8.w
+            add r4.xyz, r4, r5
+        .end
+        ifu light3_active
+            add r6.xyz, lights[15], -r1
+            dp3 r3.x, r6, r6
+            mov r3.yz, constants.xx
+            cmp constants.x, lt, lt, r3.x
+            ifc cmp.x
+                rsq r3.y, r3.x
+                mul r6.xyz, r6, r3.y
+                mul r3.z, r3.x, r3.y
+            .end
+            dp3 r8.x, r2, r6
+            max r8.x, constants.x, r8.x
+            mov r10.x, constants.y
+            dp3 r10.y, lights[16], r6
+            max r10.y, constants.x, r10.y
+            mul r10.z, r10.y, r10.y
+            dp3 r8.y, lights[18], r10
+            max r8.y, constants.x, r8.y
+            mov r12.x, constants.y
+            mov r12.y, r3.z
+            mov r12.z, r3.x
+            dp3 r8.z, lights[19], r12
+            mov r8.w, constants.x
+            cmp constants.x, lt, lt, r8.z
+            ifc cmp.x
+                rcp r8.w, r8.z
+                mul r8.w, r8.w, r8.y
+            .end
+            mov r5, lights[17]
+            mul r5.xyz, r5, r8.x
+            mul r5.xyz, r5, r8.w
+            add r4.xyz, r4, r5
+        .end
+        ifu light4_active
+            add r6.xyz, lights[20], -r1
+            dp3 r3.x, r6, r6
+            mov r3.yz, constants.xx
+            cmp constants.x, lt, lt, r3.x
+            ifc cmp.x
+                rsq r3.y, r3.x
+                mul r6.xyz, r6, r3.y
+                mul r3.z, r3.x, r3.y
+            .end
+            dp3 r8.x, r2, r6
+            max r8.x, constants.x, r8.x
+            mov r10.x, constants.y
+            dp3 r10.y, lights[21], r6
+            max r10.y, constants.x, r10.y
+            mul r10.z, r10.y, r10.y
+            dp3 r8.y, lights[23], r10
+            max r8.y, constants.x, r8.y
+            mov r12.x, constants.y
+            mov r12.y, r3.z
+            mov r12.z, r3.x
+            dp3 r8.z, lights[24], r12
+            mov r8.w, constants.x
+            cmp constants.x, lt, lt, r8.z
+            ifc cmp.x
+                rcp r8.w, r8.z
+                mul r8.w, r8.w, r8.y
+            .end
+            mov r5, lights[22]
+            mul r5.xyz, r5, r8.x
+            mul r5.xyz, r5, r8.w
+            add r4.xyz, r4, r5
+        .end
+        ifu light5_active
+            add r6.xyz, lights[25], -r1
+            dp3 r3.x, r6, r6
+            mov r3.yz, constants.xx
+            cmp constants.x, lt, lt, r3.x
+            ifc cmp.x
+                rsq r3.y, r3.x
+                mul r6.xyz, r6, r3.y
+                mul r3.z, r3.x, r3.y
+            .end
+            dp3 r8.x, r2, r6
+            max r8.x, constants.x, r8.x
+            mov r10.x, constants.y
+            dp3 r10.y, lights[26], r6
+            max r10.y, constants.x, r10.y
+            mul r10.z, r10.y, r10.y
+            dp3 r8.y, lights[28], r10
+            max r8.y, constants.x, r8.y
+            mov r12.x, constants.y
+            mov r12.y, r3.z
+            mov r12.z, r3.x
+            dp3 r8.z, lights[29], r12
+            mov r8.w, constants.x
+            cmp constants.x, lt, lt, r8.z
+            ifc cmp.x
+                rcp r8.w, r8.z
+                mul r8.w, r8.w, r8.y
+            .end
+            mov r5, lights[27]
+            mul r5.xyz, r5, r8.x
+            mul r5.xyz, r5, r8.w
+            add r4.xyz, r4, r5
+        .end
+        ifu light6_active
+            add r6.xyz, lights[30], -r1
+            dp3 r3.x, r6, r6
+            mov r3.yz, constants.xx
+            cmp constants.x, lt, lt, r3.x
+            ifc cmp.x
+                rsq r3.y, r3.x
+                mul r6.xyz, r6, r3.y
+                mul r3.z, r3.x, r3.y
+            .end
+            dp3 r8.x, r2, r6
+            max r8.x, constants.x, r8.x
+            mov r10.x, constants.y
+            dp3 r10.y, lights[31], r6
+            max r10.y, constants.x, r10.y
+            mul r10.z, r10.y, r10.y
+            dp3 r8.y, lights[33], r10
+            max r8.y, constants.x, r8.y
+            mov r12.x, constants.y
+            mov r12.y, r3.z
+            mov r12.z, r3.x
+            dp3 r8.z, lights[34], r12
+            mov r8.w, constants.x
+            cmp constants.x, lt, lt, r8.z
+            ifc cmp.x
+                rcp r8.w, r8.z
+                mul r8.w, r8.w, r8.y
+            .end
+            mov r5, lights[32]
+            mul r5.xyz, r5, r8.x
+            mul r5.xyz, r5, r8.w
+            add r4.xyz, r4, r5
+        .end
+        ifu light7_active
+            add r6.xyz, lights[35], -r1
+            dp3 r3.x, r6, r6
+            mov r3.yz, constants.xx
+            cmp constants.x, lt, lt, r3.x
+            ifc cmp.x
+                rsq r3.y, r3.x
+                mul r6.xyz, r6, r3.y
+                mul r3.z, r3.x, r3.y
+            .end
+            dp3 r8.x, r2, r6
+            max r8.x, constants.x, r8.x
+            mov r10.x, constants.y
+            dp3 r10.y, lights[36], r6
+            max r10.y, constants.x, r10.y
+            mul r10.z, r10.y, r10.y
+            dp3 r8.y, lights[38], r10
+            max r8.y, constants.x, r8.y
+            mov r12.x, constants.y
+            mov r12.y, r3.z
+            mov r12.z, r3.x
+            dp3 r8.z, lights[39], r12
+            mov r8.w, constants.x
+            cmp constants.x, lt, lt, r8.z
+            ifc cmp.x
+                rcp r8.w, r8.z
+                mul r8.w, r8.w, r8.y
+            .end
+            mov r5, lights[37]
+            mul r5.xyz, r5, r8.x
+            mul r5.xyz, r5, r8.w
+            add r4.xyz, r4, r5
+        .end
+        max r4.xyz, constants.x, r4
+        min r4.xyz, constants.y, r4
+        mov r13, v1
+        mov r3.x, lights[3].w
+        cmp constants.x, lt, lt, r3.x
+        ifc cmp.x
+            mov r12.x, light_normal[0].w
+            mov r12.y, light_normal[1].w
+            mov r12.z, light_normal[2].w
+            mul r13.xyz, r13, r12
+        .end
+        mul r4.xyz, r4, r13
+        mov r4.w, v1.w
+        .end
+    .else
+        ; Shared boolean selects flat RGB when geometric lighting is off.
+        ; Negative matrix tags already contain final CPU colors.
+        ifu model_normal
+            cmp constants.x, le, le, v5.x
+            ifc cmp.x
+                mov r12.x, light_normal[0].w
+                mov r12.y, light_normal[1].w
+                mov r12.z, light_normal[2].w
+                mul r13.xyz, v1, r12
+                mul r4.xyz, light_ambient, r13
+                mul r4.w, light_ambient.w, v1.w
+            .end
+        .end
+    .end
+    ifu affine_color
+        ; Affine materials use at most texture unit zero. Its unused secondary
+        ; coordinate attributes carry the second raster color without a larger
+        ; vertex buffer. The host restores ordinary coordinates for pipelines.
+        mov r3.xyz, v3
+        mov r3.w, v4.x
+        ifu spot_lighting
+            mov r3, constants.xxxx
+        .end
+        dp4 r1.x, color0[0], r4
+        dp4 r1.y, color0[1], r4
+        dp4 r1.z, color0[2], r4
+        dp4 r1.w, color0[3], r4
+        dp4 r2.x, color1[0], r3
+        dp4 r2.y, color1[1], r3
+        dp4 r2.z, color1[2], r3
+        dp4 r2.w, color1[3], r3
+        add r1, r1, r2
+        add r1, color_bias, r1
+        mul outcolor, color_scale, r1
+    .else
+        mov outcolor, r4
+    .end
+    mov outuv, v2
+    mov outq, v2.z
+    mov outuv1, v3
+    mov outuv2, v4
+    ; Sparse SFA shell matrices share one live strength. Two otherwise unused
+    ; nonprojective Q lanes own sampled coefficients; vertex size is unchanged.
+    cmp constants.y, lt, lt, v5.y
+    ifc cmp.x
+        mul r3.x, fur_shell.x, v3.z
+        mul r3.y, fur_shell.x, v4.z
+        add r3.x, v2.x, r3.x
+        add r3.y, v2.y, -r3.y
+        mov outuv.xy, r3
+    .end
+    ifu normal_texgen
+        cmp constants.x, ne, ne, v5.y
+        ifc cmp.x
+            cmp constants.x, lt, lt, v5.y
+            ifc cmp.x
+            mov r3.x, lights[4].w
+            cmp constants.x, lt, lt, r3.x
+            ifc cmp.x
+            dp3 r1.x, lights[a0.x+10], v6
+            dp3 r1.y, lights[a0.x+11], v6
+            .else
+            dp3 r1.x, model[a0.x], v6
+            dp3 r1.y, model[a0.x+1], v6
+            .end
+            mov r1.zw, constants.yy
+            .else
+            ; Raw ordinary texture coordinates use live matrix rows, sharing
+            ; the post-matrix bank without normal/lighting dependencies.
+            mov r1.xyz, v6
+            mov r1.w, constants.y
+            .end
+            dp4 r2.x, normal_texgen_post[0], r1
+            dp4 r2.y, normal_texgen_post[1], r1
+            dp4 r2.z, normal_texgen_post[2], r1
+            ifu texgen_unit0
+                mul r3.x, r2.x, v2.x
+                mul r3.y, r2.y, v2.y
+                add r3.y, r2.z, -r3.y
+                mov r3.z, r2.z
+                mov outuv, r3
+                mov outq, r2.z
+            .end
+            ifu texgen_unit1
+                mul r3.x, r2.x, v3.x
+                mul r3.y, r2.y, v3.y
+                add r3.y, constants.y, -r3.y
+                mov outuv1, r3
+            .end
+            ifu texgen_unit2
+                mul r3.x, r2.x, v4.x
+                mul r3.y, r2.y, v4.y
+                add r3.y, constants.y, -r3.y
+                mov outuv2, r3
+            .end
+        .end
+    .end
+    end
+.end

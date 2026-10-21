@@ -2,7 +2,7 @@
 #include "musyx/synth_dbtab.h"
 
 #if MUSY_TARGET == MUSY_TARGET_PC
-#include "hw_pc_internal.h"
+#include "fh_musyx_internal.h"
 #endif
 
 #include <math.h>

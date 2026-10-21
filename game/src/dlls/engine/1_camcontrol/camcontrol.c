@@ -1,3 +1,7 @@
+#include "fh_pica_ui_model.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "main/dll/CAM/dll_0001_camcontrol.h"
 
 #include "dolphin/math.h"
@@ -308,6 +312,27 @@ void camcontrol_updateTargetReticle(GameObject* fallbackTarget, int unused2, u32
     }
 }
 
+#include "main/rcp_dolphin_render.h"
+static void fh_callback_image(Texture* texture,const GXColor* color,unsigned constant_rgb,
+                              unsigned blend,unsigned depth_test,unsigned depth_write) {
+    FhMinimalCallbackMaterial *out=&fh_minimal_callback;
+    *out=(FhMinimalCallbackMaterial){.active=1,.constant_rgb=constant_rgb,
+        .blend=blend,.depth_test=depth_test,.depth_write=depth_write};
+    /* KAlpha callbacks intentionally leave RGB uninitialized. */
+    out->color[0]=out->color[1]=out->color[2]=255;
+    if(constant_rgb){out->color[0]=color->r;out->color[1]=color->g;out->color[2]=color->b;}
+    out->color[3]=color->a;
+    if(texture){
+        out->has_texture=fh_gx_texture_view(textureGetGXTexObj(texture),&out->texture);
+        if(!out->has_texture){out->color[3]=0;fh_minimal_rejected++;}
+        if(constant_rgb && texture->imageOffset){
+            GXTexObj mask;textureInitSecondaryGXTexObj(texture,&mask);
+            out->has_mask=fh_gx_texture_view(&mask,&out->mask);
+            if(!out->has_mask){out->color[3]=0;fh_minimal_rejected++;}
+        }
+    }
+}
+
 int camcontrol_aButtonIconTextureCallback(GameObject* obj, ObjModel* model, u32 renderOpIdx) {
     Shader* renderOp;
     GXColor color; /* r/g/b intentionally left unset: callee reads only alpha for this op */
@@ -338,6 +363,7 @@ int camcontrol_aButtonIconTextureCallback(GameObject* obj, ObjModel* model, u32 
     gxSetPeControl_ZCompLoc_(1);
     GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
     GXSetCullMode(GX_CULL_BACK);
+    if(fh_minimal_enabled) fh_callback_image(textureIdxToPtr((uintptr_t)renderOp->layers[0].texture),&color,0,color.a<255,1,color.a==255);
     return 1;
 }
 
@@ -387,6 +413,7 @@ int camcontrol_lockIconTextureCallback(GameObject* obj, ObjModel* model, int ren
     gxSetPeControl_ZCompLoc_(1);
     GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
     GXSetCullMode(GX_CULL_BACK);
+    if(fh_minimal_enabled) fh_callback_image(textureIdxToPtr((uintptr_t)renderOp->layers[0].texture),&color,0,obj->anim.alpha<255 || renderOp->layers[0].materialId<=tier,1,obj->anim.alpha==255 && renderOp->layers[0].materialId>tier);
     return 1;
 }
 
@@ -1496,3 +1523,29 @@ void Camera_initialise(void) {
 }
 
 char sCamcontrolTriggeredCamActionLoadWarning[] = "<camcontrol.c>  failed to load triggered camaction actionno %d\n";
+
+unsigned fh_pica_game_reticle_kind(const void *callback){
+    return callback==(const void*)camcontrol_aButtonIconTextureCallback?FH_PICA_UI_ACTION:
+           callback==(const void*)camcontrol_lockIconTextureCallback?FH_PICA_UI_LOCK:0;
+}
+void fh_pica_game_reticle_materials(const FhSceneAsset *asset,const void *file,const void *object,unsigned kind){
+    const ModelFileHeader *header=file;const GameObject *obj=object;
+    float dist=gCamcontrolCamera->targetDistance;
+    unsigned tier=dist<=0?4:dist<=.25f?3:dist<=.5f?2:dist<=.75f?1:0;
+    for(unsigned i=0;i<header->renderOpCount;i++){
+        unsigned id=header->renderOps[i].layers[0].materialId,alpha=obj->anim.alpha;
+        FhPicaUiMaterial state={.kind=kind,.depth_test=1};
+        if(kind==FH_PICA_UI_ACTION){
+            if((id==CAMCONTROL_RETICLE_ICON_VARIANT_PRESS_A &&
+                !(gCamcontrolCamera->targetFlags&CAMCONTROL_CAMERA_TARGET_FLAG_PROMPT_SUPPRESSED)) ||
+                gCamcontrolCamera->targetKind==CAMCONTROL_TARGET_KIND_SUPPRESSED)alpha=0;
+            state.blend=alpha<255;
+        }else{
+            if(id<=tier)alpha=((alpha+1)*CAMCONTROL_RETICLE_DIM_ALPHA_SCALE)>>8;
+            state.blend=obj->anim.alpha<255 || id<=tier;
+        }
+        /* The original KAlpha combiner reads raster RGB, not color.r/g/b. */
+        state.rgba=0xffffffu|(alpha<<24);state.depth_write=!state.blend;
+        fh_pica_material_ui(asset,i,&state);
+    }
+}

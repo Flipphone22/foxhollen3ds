@@ -643,16 +643,23 @@ static f32 HandlePreDelay(_SND_REVHI_WORK *rv, s32 channel, f32 sample) {
   return delayed;
 }
 
+#include "fh_audio_reverb.h"
 static void HandleReverb(s32 *sptr, SND_AUX_REVERBHI *rv, s32 k) {
   _SND_REVHI_WORK *work = &rv->rv;
   f32 dampWet = work->level * 0.6f;
   f32 dampDry = 0.6f - dampWet;
-  _SND_REVHI_DELAYLINE *comb0 = &work->C[k * 3];
-  _SND_REVHI_DELAYLINE *comb1 = &work->C[k * 3 + 1];
-  _SND_REVHI_DELAYLINE *comb2 = &work->C[k * 3 + 2];
-  _SND_REVHI_DELAYLINE *allpass0 = &work->AP[k * 3];
-  _SND_REVHI_DELAYLINE *allpass1 = &work->AP[k * 3 + 1];
-  _SND_REVHI_DELAYLINE *allpass2 = &work->AP[k * 3 + 2];
+  FhReverbCursor comb0Storage = fh_rev_cursor(work->C[k * 3].inputs, work->C[k * 3].inPoint, work->C[k * 3].outPoint, work->C[k * 3].length, work->C[k * 3].lastOutput);
+  FhReverbCursor *comb0 = &comb0Storage;
+  FhReverbCursor comb1Storage = fh_rev_cursor(work->C[k * 3 + 1].inputs, work->C[k * 3 + 1].inPoint, work->C[k * 3 + 1].outPoint, work->C[k * 3 + 1].length, work->C[k * 3 + 1].lastOutput);
+  FhReverbCursor *comb1 = &comb1Storage;
+  FhReverbCursor comb2Storage = fh_rev_cursor(work->C[k * 3 + 2].inputs, work->C[k * 3 + 2].inPoint, work->C[k * 3 + 2].outPoint, work->C[k * 3 + 2].length, work->C[k * 3 + 2].lastOutput);
+  FhReverbCursor *comb2 = &comb2Storage;
+  FhReverbCursor allpass0Storage = fh_rev_cursor(work->AP[k * 3].inputs, work->AP[k * 3].inPoint, work->AP[k * 3].outPoint, work->AP[k * 3].length, work->AP[k * 3].lastOutput);
+  FhReverbCursor *allpass0 = &allpass0Storage;
+  FhReverbCursor allpass1Storage = fh_rev_cursor(work->AP[k * 3 + 1].inputs, work->AP[k * 3 + 1].inPoint, work->AP[k * 3 + 1].outPoint, work->AP[k * 3 + 1].length, work->AP[k * 3 + 1].lastOutput);
+  FhReverbCursor *allpass1 = &allpass1Storage;
+  FhReverbCursor allpass2Storage = fh_rev_cursor(work->AP[k * 3 + 2].inputs, work->AP[k * 3 + 2].inPoint, work->AP[k * 3 + 2].outPoint, work->AP[k * 3 + 2].length, work->AP[k * 3 + 2].lastOutput);
+  FhReverbCursor *allpass2 = &allpass2Storage;
   s32 i;
 
   for (i = 0; i < 160; ++i) {
@@ -671,37 +678,55 @@ static void HandleReverb(s32 *sptr, SND_AUX_REVERBHI *rv, s32 k) {
     f32 lowPass;
     f32 allPass;
 
-    DLwriteSample(comb0, work->combCoef[k * 3] * comb0->lastOutput + delayed);
-    DLwriteSample(comb1, work->combCoef[k * 3 + 1] * comb1->lastOutput + delayed);
-    DLwriteSample(comb2, work->combCoef[k * 3 + 2] * comb2->lastOutput + delayed);
-    comb0Last = DLreadSample(comb0);
-    comb1Last = DLreadSample(comb1);
-    comb2Last = DLreadSample(comb2);
+    fh_rev_write(comb0, work->combCoef[k * 3] * comb0->lastOutput + delayed);
+    fh_rev_write(comb1, work->combCoef[k * 3 + 1] * comb1->lastOutput + delayed);
+    fh_rev_write(comb2, work->combCoef[k * 3 + 2] * comb2->lastOutput + delayed);
+    comb0Last = fh_rev_read(comb0);
+    comb1Last = fh_rev_read(comb1);
+    comb2Last = fh_rev_read(comb2);
     combSum = comb0Last + comb1Last + comb2Last;
 
     allpass0Last = allpass0->lastOutput;
     allpass0Input = work->allPassCoeff * allpass0Last + combSum;
-    DLwriteSample(allpass0, allpass0Input);
+    fh_rev_write(allpass0, allpass0Input);
     lowPass = allpass0Last - work->allPassCoeff * allpass0Input;
-    DLreadSample(allpass0);
+    fh_rev_read(allpass0);
 
     allpass1Last = allpass1->lastOutput;
     allpass1Input = work->allPassCoeff * allpass1Last + lowPass;
-    DLwriteSample(allpass1, allpass1Input);
+    fh_rev_write(allpass1, allpass1Input);
     lowPass = allpass1Last - work->allPassCoeff * allpass1Input;
-    DLreadSample(allpass1);
+    fh_rev_read(allpass1);
 
     lowPass *= 0.3f;
     work->lpLastout[k] = work->damping * work->lpLastout[k] + lowPass;
 
     allpass2Last = allpass2->lastOutput;
     allpass2Input = work->allPassCoeff * allpass2Last + work->lpLastout[k];
-    DLwriteSample(allpass2, allpass2Input);
+    fh_rev_write(allpass2, allpass2Input);
     allPass = allpass2Last - work->allPassCoeff * allpass2Input;
-    DLreadSample(allpass2);
+    fh_rev_read(allpass2);
 
     sptr[i] = (s32)(dampDry * sample + dampWet * allPass);
   }
+  work->C[k * 3].inPoint = (int)((comb0->input - comb0->base) * sizeof(float));
+  work->C[k * 3].outPoint = (int)((comb0->output - comb0->base) * sizeof(float));
+  work->C[k * 3].lastOutput = comb0->lastOutput;
+  work->C[k * 3 + 1].inPoint = (int)((comb1->input - comb1->base) * sizeof(float));
+  work->C[k * 3 + 1].outPoint = (int)((comb1->output - comb1->base) * sizeof(float));
+  work->C[k * 3 + 1].lastOutput = comb1->lastOutput;
+  work->C[k * 3 + 2].inPoint = (int)((comb2->input - comb2->base) * sizeof(float));
+  work->C[k * 3 + 2].outPoint = (int)((comb2->output - comb2->base) * sizeof(float));
+  work->C[k * 3 + 2].lastOutput = comb2->lastOutput;
+  work->AP[k * 3].inPoint = (int)((allpass0->input - allpass0->base) * sizeof(float));
+  work->AP[k * 3].outPoint = (int)((allpass0->output - allpass0->base) * sizeof(float));
+  work->AP[k * 3].lastOutput = allpass0->lastOutput;
+  work->AP[k * 3 + 1].inPoint = (int)((allpass1->input - allpass1->base) * sizeof(float));
+  work->AP[k * 3 + 1].outPoint = (int)((allpass1->output - allpass1->base) * sizeof(float));
+  work->AP[k * 3 + 1].lastOutput = allpass1->lastOutput;
+  work->AP[k * 3 + 2].inPoint = (int)((allpass2->input - allpass2->base) * sizeof(float));
+  work->AP[k * 3 + 2].outPoint = (int)((allpass2->output - allpass2->base) * sizeof(float));
+  work->AP[k * 3 + 2].lastOutput = allpass2->lastOutput;
 }
 #endif
 

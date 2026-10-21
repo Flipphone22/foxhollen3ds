@@ -1,3 +1,10 @@
+#include "fh_ground_mask.h"
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
+#include "fh_native_scene.h"
+#include "fh_model_resources.h"
 #include "dolphin/os/OSReport.h"
 #include "dolphin/os.h"
 #include "types.h"
@@ -9,6 +16,7 @@
 #include "dolphin/os/OSArena.h"
 #include "dolphin/os/OSTime.h"
 #include "main/mm.h"
+#include "fh_game_memory.h"
 #include "main/pi_dolphin.h"
 #include "main/pi_flush.h"
 #include "string.h"
@@ -465,6 +473,13 @@ static int changeHeapSlot(int region, int idx, int newSize, int type, int newTyp
 }
 
 static void heapFree(int region, int idx) {
+    HeapItem* fh_item = ((HeapItem*)gMmRegionTable[region].start) + idx;
+    fh_model_resources_forget_allocation(fh_item->loc, fh_item->size);
+    extern void fh_native_model_forget(const void*, unsigned);
+    fh_native_model_forget(fh_item->loc, fh_item->size);
+    fh_pica_hud_forget(fh_item->loc, fh_item->size);
+    fh_native_scene_forget(fh_item->loc, fh_item->size);
+    fh_native_ground_mask_forget(fh_item->loc,fh_item->size);
     s16 next;
     s16 prev;
     HeapItem* base = (HeapItem*)gMmRegionTable[region].start;
@@ -988,7 +1003,7 @@ void mmInit(void)
     u8* lo;
     gMmRegionCount = 0;
     lo = OSGetArenaLo();
-    t = (u8*)OSGetArenaHi() - lo - 0xd80000;
+    t = (u8*)OSGetArenaHi() - lo - fh_game_region_reserve();
     size = t - 0x720;
     gMmRegion0Size = size;
     p = OSAllocFromHeap(__OSCurrHeap, size);
@@ -999,17 +1014,20 @@ void mmInit(void)
     gSaveGameWorkBuffer = p;
     gAskProgressiveScanFlag = (u8*)p + 0x6ec;
 
-    p = OSAllocFromHeap(__OSCurrHeap, 0x380000);
-    DCFlushRange(p, 0x380000);
-    mmInitRegion(p, 0x380000, MM_REGION1_SLOT_COUNT);
+    t = fh_game_region_size(1);
+    p = OSAllocFromHeap(__OSCurrHeap, t);
+    DCFlushRange(p, t);
+    mmInitRegion(p, t, MM_REGION1_SLOT_COUNT);
 
-    p = OSAllocFromHeap(__OSCurrHeap, 0x13ff40);
-    DCFlushRange(p, 0x13ff40);
-    mmInitRegion(p, 0x13ff40, MM_REGION2_SLOT_COUNT);
+    t = fh_game_region_size(2);
+    p = OSAllocFromHeap(__OSCurrHeap, t);
+    DCFlushRange(p, t);
+    mmInitRegion(p, t, MM_REGION2_SLOT_COUNT);
 
-    p = OSAllocFromHeap(__OSCurrHeap, 0x8bff40);
-    DCFlushRange(p, 0x8bff40);
-    mmInitRegion(p, 0x8bff40, MM_REGION3_SLOT_COUNT);
+    t = fh_game_region_size(3);
+    p = OSAllocFromHeap(__OSCurrHeap, t);
+    DCFlushRange(p, t);
+    mmInitRegion(p, t, MM_REGION3_SLOT_COUNT);
 
     gMmOpCount++;
     gMmFreeDelay = 2;

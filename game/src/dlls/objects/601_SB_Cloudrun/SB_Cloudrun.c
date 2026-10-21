@@ -64,7 +64,10 @@ struct SBCloudRunnerRideState
 {
     u8 pad0[0x10];
     void* targetObj;
-    u8 pad18[0x24];
+    void* resource;
+    void* texture0;
+    void* texture1;
+    u8 pad20[0x0c];
     s16 cloudYawDrift;
     s16 rotZAccum;
     u8 pad30[0x30];
@@ -345,6 +348,18 @@ STATIC_ASSERT(offsetof(SBCloudRunnerState, done) == 0x6E);
 STATIC_ASSERT(offsetof(SBCloudRunnerState, stickX) == 0x70);
 STATIC_ASSERT(offsetof(SBCloudRunnerState, steerX) == 0x78);
 STATIC_ASSERT(sizeof(SBCloudRunnerState) == 0x84);
+#define FH_RIDE_FIELD(a,b) _Static_assert(offsetof(SBCloudRunnerRideState,a)==offsetof(SBCloudRunnerState,b), "Cloudrunner ride overlay: " #a)
+FH_RIDE_FIELD(targetObj,targetObj);
+FH_RIDE_FIELD(cloudYawDrift,rotXAccum);
+FH_RIDE_FIELD(rotZAccum,rotZ);
+FH_RIDE_FIELD(liftAmount,steerSmoothed);
+FH_RIDE_FIELD(rideState,rideSubState);
+FH_RIDE_FIELD(stickX,stickX);
+FH_RIDE_FIELD(stickY,stickY);
+FH_RIDE_FIELD(bankAmount,steerX);
+FH_RIDE_FIELD(liftBase,steerZ);
+_Static_assert(sizeof(SBCloudRunnerRideState)<=sizeof(SBCloudRunnerState), "Cloudrunner ride overlay capacity");
+#undef FH_RIDE_FIELD
 
 void SB_CloudRunner_onSeqFree(GameObject* obj)
 {

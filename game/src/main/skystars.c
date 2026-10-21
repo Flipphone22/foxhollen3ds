@@ -1,3 +1,6 @@
+#include "fh_pica_stars.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_viewport.h"
 #include "main/sky_interface.h"
 #include "main/mm.h"
 #include "main/camera.h"
@@ -60,10 +63,7 @@ SkyStarAlphaRange gNewCloudStarAlphaRanges[SKY_STAR_COLOR_RANGE_COUNT] = {
 };
 GXColor gNewCloudStarFogColor = {0};
 
-static inline void starFifoPosition3s16(s16 x, s16 y, s16 z)
-{
-    GXPosition3s16(x, y, z);
-}
+
 
 SkyStarColorRange gNewCloudStarColorRanges[SKY_STAR_COLOR_RANGE_COUNT] = {
     {0xD0, 0xFF, 0x80, 0xA0, 0x80, 0xA0},
@@ -71,8 +71,8 @@ SkyStarColorRange gNewCloudStarColorRanges[SKY_STAR_COLOR_RANGE_COUNT] = {
     {0xD0, 0xFF, 0xA0, 0xD0, 0x80, 0xA0},
     {0xD0, 0xFF, 0x80, 0xA0, 0xD0, 0xFF},
 };
-u16 gNewCloudStarDisplayListSizes[SKY_STAR_DISPLAY_LIST_COUNT];
-u8* gNewCloudStarDisplayLists[SKY_STAR_DISPLAY_LIST_COUNT];
+
+
 
 #define NEWCLOUD_TEXTURE_STAR_A 0xc21 /* gNewCloudStarTextureA */
 #define NEWCLOUD_TEXTURE_STAR_B 0xc22 /* gNewCloudStarTextureB */
@@ -124,20 +124,9 @@ void drawSkyStars(void)
         alpha = 0xff;
         pointSizeDivisor = 1;
     }
-    GXSetCullMode(GX_CULL_NONE);
     Camera_RebuildProjectionMatrix();
-    GXClearVtxDesc();
-    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
-    GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
-    gxTevResetStages();
-    gxTevAddColor1Stage();
-    gxTevCommitStages();
-    gxSetAdditiveBlendNoZTest();
-    color = gNewCloudStarFogColor;
-    GXSetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, color);
     Camera_UpdateViewMatrices();
-    GXLoadPosMtxImm((MtxPtr)Camera_GetViewRotationMatrix(), GX_PNMTX0);
-    GXSetCurrentMtx(GX_PNMTX0);
+    unsigned pointSize;
     for (i = firstDisplayList; i < SKY_STAR_DISPLAY_LIST_COUNT; i++)
     {
         colorRange = &gNewCloudStarColorRanges[i & 3];
@@ -153,32 +142,24 @@ void drawSkyStars(void)
         {
             starAlpha = alpha;
         }
-        _gxSetTevColor2((u8)red, (u8)green, (u8)blue, (u8)starAlpha);
-        if (i == SKY_STAR_SMALL_DISPLAY_LIST_COUNT)
-        {
-            selectTexture(gNewCloudStarTextureA, 0);
-            gxTevResetStages();
-            gxTevTextureTimesColor1Stage();
-            gxTevCommitStages();
-        }
-        else if (i == SKY_STAR_TEXTURE_B_LIST_INDEX)
-        {
-            selectTexture(gNewCloudStarTextureB, 0);
-        }
         if (i < SKY_STAR_SMALL_DISPLAY_LIST_COUNT)
         {
-            GXSetPointSize((u8)randomGetRange(0xc, 0xc), GX_TO_ONE);
+            pointSize=(u8)randomGetRange(0xc, 0xc);
         }
         else if (i & 4)
         {
-            GXSetPointSize((u8)(randomGetRange(0x30, 0x3c) / pointSizeDivisor), GX_TO_ONE);
+            pointSize=(u8)(randomGetRange(0x30, 0x3c) / pointSizeDivisor);
         }
         else
         {
-            GXSetPointSize((u8)(randomGetRange(0x48, 0x60) / pointSizeDivisor), GX_TO_ONE);
+            pointSize=(u8)(randomGetRange(0x48, 0x60) / pointSizeDivisor);
         }
-        GXCallDisplayList(gNewCloudStarDisplayLists[i], gNewCloudStarDisplayListSizes[i]);
+        fh_pica_stars_group(i,((u32)(u8)red<<24)|((u32)(u8)green<<16)|((u32)(u8)blue<<8)|(u8)starAlpha,pointSize);
     }
+    float viewport[6];unsigned clip[4];
+    fh_pica_live_viewport(viewport);GXGetScissor(clip,clip+1,clip+2,clip+3);
+    fh_pica_stars_draw(firstDisplayList,fh_pica_hud_page(gNewCloudStarTextureA),fh_pica_hud_page(gNewCloudStarTextureB),
+        (const float(*)[4])Camera_GetProjectionMatrix(),(const float(*)[4])Camera_GetViewRotationMatrix(),viewport,clip);
 }
 
 
@@ -194,7 +175,7 @@ void initSkyStars(void)
     Mtx rotationA;
     Mtx rotationB;
 
-    GXSetMisc(GX_MT_XF_FLUSH, 0);
+    fh_pica_stars_allocate();
     testAndSet_onlyUseHeap3(0);
     constellation = mmAlloc(SKY_STAR_CONSTELLATION_POINT_COUNT * sizeof(Vec3f), 0x7f7f7fff, 0);
     testAndSet_onlyUseHeap3(1);
@@ -222,14 +203,10 @@ void initSkyStars(void)
     gNewCloudStarsInitialized = 1;
     gNewCloudStarTextureA = textureLoadAsset(NEWCLOUD_TEXTURE_STAR_A);
     gNewCloudStarTextureB = textureLoadAsset(NEWCLOUD_TEXTURE_STAR_B);
+    fh_pica_game_hud_loaded(gNewCloudStarTextureA);
+    fh_pica_game_hud_loaded(gNewCloudStarTextureB);
     for (displayListIndex = 0; displayListIndex < SKY_STAR_DISPLAY_LIST_COUNT; displayListIndex++)
     {
-        gNewCloudStarDisplayLists[displayListIndex] =
-            mmAlloc(SKY_STAR_DISPLAY_LIST_BUFFER_SIZE, 0x7f7f7fff, 0);
-        DCInvalidateRange(gNewCloudStarDisplayLists[displayListIndex], SKY_STAR_DISPLAY_LIST_BUFFER_SIZE);
-        GXBeginDisplayList(gNewCloudStarDisplayLists[displayListIndex], SKY_STAR_DISPLAY_LIST_BUFFER_SIZE);
-        GXResetWriteGatherPipe();
-        GXBegin(GX_POINTS, GX_VTXFMT0, SKY_STAR_POINTS_PER_DISPLAY_LIST);
         for (pointIndex = 0; pointIndex < SKY_STAR_POINTS_PER_DISPLAY_LIST; pointIndex++)
         {
             if (randomGetRange(0, 9) < 5)
@@ -337,11 +314,10 @@ void initSkyStars(void)
                 PSMTXConcat(rotationB, rotationA, rotationA);
                 PSMTXMultVecSR(rotationA, &starPosition, &starPosition);
             }
-            starFifoPosition3s16(starPosition.x, starPosition.y, starPosition.z);
-            GXTexCoord2s16(0, 0);
+            fh_pica_stars_point(displayListIndex,pointIndex,starPosition.x,starPosition.y,starPosition.z);
         }
-        gNewCloudStarDisplayListSizes[displayListIndex] = GXEndDisplayList();
+
     }
     mm_free(constellation);
-    GXSetMisc(GX_MT_XF_FLUSH, 8);
+    fh_pica_stars_commit();
 }

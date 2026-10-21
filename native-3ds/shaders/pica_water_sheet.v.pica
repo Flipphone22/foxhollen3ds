@@ -1,0 +1,56 @@
+; Native load-prepared water grid. Batch-resident reflection transforms.
+; SHORT4=(U Q14,V Q14,signed B Q4,signed G Q4). Explicit per-pass
+; normalized source-texel scale; never infer displacement from native target
+; dimensions. Interpolation is approximate, not fragment dependent sampling.
+.fvec model_view[3], projection[4], reflected[3], tint, mask_scale
+.fvec quad_origin, quad_extent, indirect_scale
+.fvec reflected_second[3], fog_padding[76], fog_distance_scale
+.bool second_pass
+.constf constants(0.0,1.0,0.00006103515625,0.0625)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0.xy
+.out - texcoord0w outuv.z
+.out outmask texcoord1
+.out outview view
+.out outquat normalquat
+.proc main
+    mul r1.xy, constants.z, v0
+    mul r3.xyz, quad_extent, r1.xyy
+    add r3.xyz, quad_origin, r3
+    mov r3.w, constants.y
+    dp4 r0.x, model_view[0], r3
+    dp4 r0.y, model_view[1], r3
+    dp4 r0.z, model_view[2], r3
+    mov r0.w, constants.y
+    dp4 outpos.x, projection[0], r0
+    dp4 outpos.y, projection[1], r0
+    dp4 outpos.z, projection[2], r0
+    dp4 outpos.w, projection[3], r0
+    mul r2.xy, constants.w, v0.zw
+    ifu second_pass
+        dp4 r4.x, reflected_second[0], r0
+        dp4 r4.y, reflected_second[1], r0
+        dp4 r4.z, reflected_second[2], r0
+        mul r2.xy, indirect_scale.zw, r2
+    .else
+        dp4 r4.x, reflected[0], r0
+        dp4 r4.y, reflected[1], r0
+        dp4 r4.z, reflected[2], r0
+        mul r2.xy, indirect_scale, r2
+    .end
+    mul r2.xy, r4.z, r2
+    add outuv.xy, r4, r2
+    mov outuv.z, r4.z
+    mov outuv.w, constants.y
+    mov outcolor, tint
+    mul r1.xy, mask_scale, r1
+    mov outmask.x, r1.x
+    add outmask.y, constants.y, -r1.y
+    mov outmask.zw, constants.xxxy
+    mov outview.xyw, constants.x
+    mul r2.x, fog_distance_scale.x, -r0.z
+    add outview.z, constants.y, r2.x
+    mov outquat, constants.xxxy
+    end
+.end

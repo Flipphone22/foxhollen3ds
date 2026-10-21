@@ -1,3 +1,4 @@
+#include "fh_ground_result.h"
 /* Blasted-rock, -wall, and -tunnel targets. */
 
 #include "dlls/objects/345.h"
@@ -24,7 +25,7 @@ int blasted_activateMapLayer(GameObject* obj, int mapLayerId) {
 
     block = mapGetBlock(objPosToMapBlockIdx(obj->anim.localPosX, obj->anim.localPosY, obj->anim.localPosZ));
     if (block == NULL || (block->flags4 & MAP_BLOCK_FLAG_LOADED) == 0) {
-        return 0;
+        {fh_native_ground_changed();return 0;}
     }
     {
         int shaderIndex;
@@ -45,7 +46,9 @@ int blasted_activateMapLayer(GameObject* obj, int mapLayerId) {
             }
         }
     }
-    return 1;
+    {fh_native_ground_changed();return 1;}
+
+    fh_native_ground_changed();
 }
 
 int blasted_getExtraSize(void) {

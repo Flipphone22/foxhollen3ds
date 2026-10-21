@@ -1,0 +1,42 @@
+; Immutable quad vertices contain corner XY and a three-row parameter index.
+; Per glyph: rectangle origin/extent, UV origin/extent, live RGBA.
+.fvec matrix[4], glyph[72], maskscale, view[3]
+.constf constants(0.25,-2.0,1.0,0.0)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0
+.out outmask texcoord1
+.out outsky texcoord2
+.proc main
+    mova a0.x, v0.z
+    mov r0, constants.wwyy
+    mul r1.xy, glyph[a0.x].zw, v0.xy
+    add r0.xy, glyph[a0.x].xy, r1.xy
+    mul r0.xy, constants.x, r0.xy
+    mov r0.z, maskscale.z
+    mov r0.w, constants.z
+    dp4 r6.x, view[0], r0
+    dp4 r6.y, view[1], r0
+    dp4 r6.z, view[2], r0
+    mov r6.w, constants.z
+    dp4 r2.x, matrix[0], r6
+    dp4 r2.y, matrix[1], r6
+    dp4 r2.z, matrix[2], r6
+    dp4 r2.w, matrix[3], r6
+    ; LCD rotation: native X = game Y, native Y = -game X.
+    mov r3, r2.yxzw
+    mov r3.y, -r2.x
+    mov outpos, r3
+    mov outcolor, glyph[a0.x+2]
+    mul r1.xy, glyph[a0.x+1].zw, v0.xy
+    add r4.xy, glyph[a0.x+1].xy, r1.xy
+    mul r5.xy, maskscale, r4.xy
+    add r5.y, constants.z, -r5.y
+    mov r5.zw, constants.wwwz
+    mov outmask, r5
+    add r4.y, constants.z, -r4.y
+    mov r4.zw, constants.wwwz
+    mov outuv, r4
+    mov outsky, r4
+    end
+.end

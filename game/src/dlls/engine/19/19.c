@@ -1,3 +1,17 @@
+#include "fh_pica_water_sheet.h"
+static unsigned native_wake_ready,native_ripple_ready;
+static FhWaterSheetInstance native_water_instances[30];
+#include "fh_pica_splash.h"
+#include "fh_pica_drops.h"
+#include "fh_graphics_options.h"
+#include "fh_platform.h"
+#include "main/pi_dolphin.h"
+#include "track/intersect_internal.h"
+#include "main/gx_scissor.h"
+#include "fh_native_splash_geometry.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "main/dll/waterfx.h"
 #include "main/dll/baddie_state.h"
 #include "main/dll/ppcwgpipe_struct.h"
@@ -151,63 +165,14 @@ static f32 waterfxBandEnvelope(f32 frac, f32 life, f32* phaseOut, f32* alphaOut)
  */
 void waterfx_drawSplashBurst(WaterParticle* s)
 {
-    Mtx mtxD;
-    Mtx scale;
-    Mtx mtxB;
-    Mtx mtxC;
-    int mtxIdx;
-    u8* colorOut;
-    int i;
+    FhPicaSplashState live={s->x-playerMapOffsetX,s->y,s->z-playerMapOffsetZ,s->size,s->life};
+    unsigned clip[4];GXGetScissor(clip,clip+1,clip+2,clip+3);
+    u8 ambient[3],ignored;
+    if(isHeavyFogEnabled()) {ambient[0]=gFogColor.r;ambient[1]=gFogColor.g;ambient[2]=gFogColor.b;}
+    else (*gSkyInterface)->getCurrentAmbientAndLightColors(ambient,ambient+1,ambient+2,&ignored,&ignored,&ignored);
+    fh_pica_splash_draw(&live,(const float(*)[4])Camera_GetViewMatrix(),
+        (const float(*)[4])Camera_GetProjectionMatrix(),clip,ambient);
 
-    PSMTXScale(scale, s->size, s->size, s->size);
-    i = 0;
-    mtxIdx = 0;
-    colorOut = s->vtxColors;
-    for (; i < 8; i++)
-    {
-        f32 bandPhase;
-        f32 ph;
-        f32 life = s->life;
-        f32 dd;
-        f32 lim;
-        f32 sc;
-        f32 fade;
-        f32 alpha;
-        bandPhase = WATERFX_PHASE_START + WATERFX_BAND_OFFSET_SCALE * ((f32)i / WATERFX_BAND_COUNT);
-        ph = bandPhase * life;
-        dd = ph - 0.5f;
-        fade = -(WATERFX_FADE_CURVE_SCALE * (dd * dd) - 1.0f);
-        lim = WATERFX_BAND_LIMIT_BASE + WATERFX_BAND_OFFSET_SCALE * ((f32)i / WATERFX_BAND_COUNT);
-        if (life < lim)
-        {
-            alpha = 1.0f;
-        }
-        else
-        {
-            alpha = (1.0f - life) / (1.0f - lim);
-        }
-        sc = 2.0f * ph + 1.0f;
-        PSMTXScale(mtxB, sc, 1.0f, sc);
-        PSMTXTrans(mtxC, 0.0f, 2.0f * fade, 0.0f);
-        PSMTXConcat(mtxC, mtxB, mtxD);
-        PSMTXConcat(scale, mtxD, mtxD);
-        PSMTXTrans(mtxC, s->x - playerMapOffsetX, s->y, s->z - playerMapOffsetZ);
-        PSMTXConcat(mtxC, mtxD, mtxD);
-        PSMTXConcat((MtxPtr)Camera_GetViewMatrix(), mtxD, mtxD);
-        GXLoadPosMtxImm(mtxD, mtxIdx);
-        colorOut[0] = 0;
-        colorOut[1] = 0;
-        colorOut[2] = 0;
-        colorOut[3] = (u8)(int)(WATERFX_ALPHA_MAX * alpha);
-        mtxIdx += 3;
-        colorOut += 4;
-    }
-    DCStoreRange(s->vtxColors, 32);
-    GXSetArray(GX_VA_CLR0, s->vtxColors, sizeof(s->vtxColors), 4, false);
-    GXSetCullMode(GX_CULL_FRONT);
-    GXCallDisplayList(gWaterfxSplashDisplayList, gWaterfxSplashDisplayListSize);
-    GXSetCullMode(GX_CULL_BACK);
-    GXCallDisplayList(gWaterfxSplashDisplayList, gWaterfxSplashDisplayListSize);
 }
 
 static void waterfx_buildSplashDisplayList(void) {
@@ -219,7 +184,7 @@ static void waterfx_buildSplashDisplayList(void) {
     void* dl;
     u8 a[1];
 
-    GXSetMisc(GX_MT_XF_FLUSH, 0);
+
     gWaterfxSplashPosArray = mmAlloc(192, 0, 0);
     gWaterfxSplashTexCoordArray = mmAlloc(1024, 0, 0);
     for (i = 0; i < 8; i++) {
@@ -244,33 +209,39 @@ static void waterfx_buildSplashDisplayList(void) {
             }
         }
     }
-    DCStoreRange(gWaterfxSplashPosArray, 192);
-    DCStoreRange(gWaterfxSplashTexCoordArray, 1024);
-    dl = mmAlloc(2880, 0x7F7F7FFF, 0);
-    gWaterfxSplashDisplayList = dl;
-    DCInvalidateRange(dl, 2880);
-    GXBeginDisplayList(gWaterfxSplashDisplayList, 2880);
-    GXResetWriteGatherPipe();
-    a[0] = 0;
-    for (k = 0; k < 15; k++) {
-        GXBegin(GX_TRIANGLESTRIP, GX_VTXFMT2, 16);
-        for (m = 7; m >= 0; m--) {
-            a[0] = m * 3;
-            GXPosition1x8(a[0]);
-            GXTexCoord1x8(a[0]);
-            GXPosition1x16(k);
-            GXColor1x16(m);
-            GXTexCoord1x16(m * 16 + k);
-            GXPosition1x8(a[0]);
-            GXTexCoord1x8(a[0]);
-            GXPosition1x16((k + 1) % 16);
-            GXColor1x16(m);
-            GXTexCoord1x16(m * 16 + (k + 1) % 16);
-        }
+
+    FhTexture mask,foam;
+    if(!gWaterfxSplashTexture0 || !gWaterfxSplashTexture1 ||
+       !fh_gx_texture_view(textureGetGXTexObj(gWaterfxSplashTexture0),&mask) ||
+       !fh_gx_texture_view(textureGetGXTexObj(gWaterfxSplashTexture1),&foam))
+        fh_platform_panic("PICA splash source textures");
+    fh_pica_splash_load((const float(*)[3])gWaterfxSplashPosArray,
+        (const float(*)[2])gWaterfxSplashTexCoordArray,&mask,&foam);
+    fh_pica_drops_load();
+    /* Same ordered corners/indices as spawnSimpleRipple/onMapSetup. Never
+     * invoke a spawn to prepare geometry: that would modify game state. */
+    static const int16_t position[4][3]={{-200,0,400},{-200,0,-200},{200,0,-200},{200,0,400}};
+    static const int16_t uv[4][2]={{0,0},{0,128},{128,128},{128,0}};
+    static const uint16_t indices[6]={3,1,0,3,2,1};
+    FhTexture wake_mask;
+    native_wake_ready=native_ripple_ready=0;
+    if(!gWaterfxWakeTexture || !fh_gx_texture_view(textureGetGXTexObj(gWaterfxWakeTexture),&wake_mask))
+        fh_platform_panic("Native wake source mask");
+    if(fh_pica_water_sheet_prepare()){
+        native_wake_ready=fh_pica_water_sheet_load(position,uv,indices,&wake_mask);
+        /* Source generator owns these pixels. Do not use authored0x56, invoke
+         * a spawn, or regenerate them with a different RNG/math path. */
+        extern Texture *gNewShadowBumpTexture;
+        static const int16_t ripple_position[4][3]={{-300,0,300},{-300,0,-300},{300,0,-300},{300,0,300}};
+        static const int16_t ripple_uv[4][2]={{0,0},{0,127},{127,127},{127,0}};
+        FhTexture ripple_mask;
+        if(gNewShadowBumpTexture && fh_gx_texture_view(textureGetGXTexObj(gNewShadowBumpTexture),&ripple_mask))
+            native_ripple_ready=fh_pica_ripple_load(ripple_position,ripple_uv,indices,&ripple_mask);
     }
-    gWaterfxSplashDisplayListSize = GXEndDisplayList();
-    GXSetMisc(GX_MT_XF_FLUSH, 8);
+
+    gWaterfxSplashDisplayList=NULL;
 }
+
 
 int waterfx_consumePendingImpactNearPoint(f32* vec, f32 dist)
 {
@@ -495,112 +466,117 @@ int waterfx_spawnSplashDrops(WaterParticle* src, int idx, int count, f32 v)
     return count;
 }
 
+
+static void fh_waterfx_triangles(const void* data,const u8* descriptors,unsigned alpha) {
+    const WaterVtx* src=data;FhMinimalEffectVertex vertices[6];unsigned scissor[4];
+    for(unsigned t=0;t<2;t++)for(unsigned j=0;j<3;j++) {
+        unsigned index=descriptors[t*16+j+1];
+        if(index>=4){fh_minimal_rejected++;return;}
+        const WaterVtx* v=src+index;
+        vertices[t*3+j]=(FhMinimalEffectVertex){.position={v->x,v->y,v->z,1},
+            .color={1,1,1,alpha/255.f},.uv={v->u/128.f,v->v/128.f}};
+    }
+    GXGetScissor(scissor,scissor+1,scissor+2,scissor+3);
+    fh_minimal_water_effect_draw(vertices,(const float(*)[4])gCameraModelViewMatrix,scissor);
+}
+
 void waterfx_render(int obj, int renderParam)
 {
-    int poolOffset;
-    int descriptorOffset;
-    WaterEntry7* e;
-    WaterParticle* s;
-    WaterDrop* d;
-    WaterEntry* g;
-    int i;
-    int vertexOffset;
-    int j;
-    f32 thr;
-    MatrixTransform dp;
-    if (gWaterfxRippleCount != 0 || gWaterfxWakeCount != 0 || gWaterfxSplashCount != 0 ||
-        gWaterfxDropCount != 0)
-    {
-        GXSetCullMode(GX_CULL_NONE);
-        if (gWaterfxRippleCount != 0)
-        {
-            setupReflectionBumpDistortTev(gWaterfxRippleTexture);
+    _Static_assert(WATERFX_POOL_SIZE==30,"Water batch source pool capacity");
+
+    /* Other water families still require native replacements; simulation,
+     * impact spawning, life and random calls remain in the original run(). */
+    if((!(fh_graphics_options&(FH_GRAPHICS_SPLASHES|FH_GRAPHICS_WATER_DROPS|FH_GRAPHICS_WAKES)) && !(fh_graphics_effects&FH_EFFECT_RIPPLES)) || (fh_graphics_options&FH_GRAPHICS_NO_RENDER))return;
+    const void *wake_capture=NULL;unsigned need_capture=0;
+    unsigned wakes_enabled=(fh_graphics_options&FH_GRAPHICS_WAKES) &&
+        !(fh_graphics_options&FH_GRAPHICS_NO_PARTICLE_TEX);
+    unsigned ripples_enabled=(fh_graphics_effects&FH_EFFECT_RIPPLES) &&
+        !(fh_graphics_options&FH_GRAPHICS_NO_PARTICLE_TEX);
+    if(wakes_enabled && !native_wake_ready)fh_graphics_options_reject(FH_GRAPHICS_WAKES);
+    if(ripples_enabled && !native_ripple_ready)fh_graphics_effects_reject(FH_EFFECT_RIPPLES);
+    wakes_enabled=wakes_enabled && native_wake_ready && !(fh_graphics_unavailable_mask&FH_GRAPHICS_WAKES);
+    ripples_enabled=ripples_enabled && native_ripple_ready && !(fh_effects_unavailable_mask&FH_EFFECT_RIPPLES);
+    if(wakes_enabled)for(unsigned i=0;i<WATERFX_POOL_SIZE;i++){
+        const WaterEntry *g=(const WaterEntry*)(gWaterfxWakePool+i*0x1c);
+        if(g->active && !g->f18){need_capture=1;break;}
+    }
+    if(ripples_enabled && !need_capture)for(unsigned i=0;i<WATERFX_POOL_SIZE;i++){
+        const WaterEntry7 *g=(const WaterEntry7*)(gWaterfxRipplePool+i*0x1c);
+        if(g->active){need_capture=1;break;}
+    }
+    if(need_capture){
+        wake_capture=fh_pica_water_sheet_capture();
+        if(!wake_capture && ripples_enabled)fh_graphics_effects_reject(FH_EFFECT_RIPPLES);
+    }
+    unsigned clip[4],heavy=0;u8 tint[4],ignored;float reflected[2][3][4];
+    if(wake_capture){
+        GXGetScissor(clip,clip+1,clip+2,clip+3);heavy=isHeavyFogEnabled();
+        if(heavy){tint[0]=gFogColor.r;tint[1]=gFogColor.g;tint[2]=gFogColor.b;}
+        else{
+            (*gSkyInterface)->getCurrentAmbientAndLightColors(tint,tint+1,tint+2,&ignored,&ignored,&ignored);
+            for(unsigned c=0;c<3;c++)tint[c]>>=3;
         }
-        for (i = 0, poolOffset = 0; i < WATERFX_POOL_SIZE; poolOffset += 0x1c, i++)
-        {
-            e = (WaterEntry7*)(gWaterfxRipplePool + poolOffset);
-            if (e->active != 0)
-            {
-                setTextColor((void*)(uintptr_t)obj, 0xff, 0xff, 0xff, (u8)e->active);
-                dp.x = e->x;
-                dp.y = e->y;
-                dp.z = e->z;
-                dp.scale = e->scale;
-                dp.rotX = e->rot;
-                dp.rotZ = 0;
-                dp.rotY = 0;
-                Camera_LoadModelViewMatrix(obj, renderParam, &dp, 1.0f, WATERFX_ZERO,
-                                           NULL);
-                loadReflectionTexMtxs();
-                lightmapDrawTriangleList(gWaterfxRippleVtx + i * 0x40,
-                                  gWaterfxRippleVtxDesc + i * 0x20, 2);
+        memcpy(reflected[0],gCameraLightPerspectiveScaledMatrix,sizeof(reflected[0]));
+        memcpy(reflected[1],gCameraLightPerspectiveFlipYMatrix,sizeof(reflected[1]));
+    }
+    /* Original ordering: ripple sheets, splash rings, drops, then wakes. */
+    if(wake_capture && ripples_enabled){
+        unsigned mix=(unsigned)gReflectionBumpKColor.r|((unsigned)gReflectionBumpKColor.g<<8)|
+            ((unsigned)gReflectionBumpKColor.b<<16)|((unsigned)gReflectionBumpKColor.a<<24);
+        unsigned instance_count=0;
+        for(unsigned i=0;i<WATERFX_POOL_SIZE;i++){
+            const WaterEntry7 *g=(const WaterEntry7*)(gWaterfxRipplePool+i*0x1c);
+            if(!g->active)continue;
+            MatrixTransform dp={0};dp.x=g->x;dp.y=g->y;dp.z=g->z;
+            dp.scale=g->scale;dp.rotX=g->rot;tint[3]=(u8)g->active;
+            Camera_LoadModelViewMatrix(obj,renderParam,&dp,1.f,WATERFX_ZERO,NULL);
+            memcpy(native_water_instances[instance_count].view,gCameraModelViewMatrix,sizeof native_water_instances[0].view);
+            native_water_instances[instance_count++].alpha=tint[3];
+        }
+        fh_pica_water_sheet_batch(1,wake_capture,native_water_instances,instance_count,
+            (const float(*)[4])Camera_GetProjectionMatrix(),reflected,clip,tint,mix,heavy);
+    }
+    if(fh_graphics_options&FH_GRAPHICS_SPLASHES)for(unsigned i=0;i<WATERFX_MAX_SPLASHES;i++){
+        WaterParticle *s=(WaterParticle*)(gWaterfxSplashPool+i*0x3c);
+        if(s->life<1.f)waterfx_drawSplashBurst(s);
+    }
+    if(fh_graphics_options&FH_GRAPHICS_WATER_DROPS){
+        _Static_assert(WATERFX_POOL_SIZE==FH_PICA_DROP_CAPACITY,"Native drop capacity");
+        float centers[FH_PICA_DROP_CAPACITY][3];unsigned count=0;
+        for(unsigned i=0;i<WATERFX_POOL_SIZE;i++){
+            const WaterDrop *d=(const WaterDrop*)(gWaterfxDropPool+i*0x1c);
+            if(d->parentIdx!=-1){
+                centers[count][0]=d->x-playerMapOffsetX;centers[count][1]=d->y;
+                centers[count][2]=d->z-playerMapOffsetZ;count++;
             }
         }
-        j = 0;
-        if (gWaterfxSplashCount != 0)
-        {
-            setupWaterReflectionTev(gWaterfxSplashTexture0, gWaterfxSplashTexture1);
-            GXSetArray(GX_VA_POS, gWaterfxSplashPosArray, 192, 0xc, true);
-            GXSetArray(GX_VA_TEX0, gWaterfxSplashTexCoordArray, 1024, 8, true);
-            GXClearVtxDesc();
-            GXSetVtxDesc(GX_VA_PNMTXIDX, GX_DIRECT);
-            GXSetVtxDesc(GX_VA_TEX0MTXIDX, GX_DIRECT);
-            GXSetVtxDesc(GX_VA_POS, GX_INDEX16);
-            GXSetVtxDesc(GX_VA_CLR0, GX_INDEX16);
-            GXSetVtxDesc(GX_VA_TEX0, GX_INDEX16);
+        if(count){
+            unsigned clip[4];GXGetScissor(clip,clip+1,clip+2,clip+3);
+            u8 ambient[3],ignored;
+            (*gSkyInterface)->getCurrentAmbientAndLightColors(ambient,ambient+1,ambient+2,&ignored,&ignored,&ignored);
+            fh_pica_drops_draw((const float(*)[3])centers,count,(const float(*)[4])Camera_GetViewMatrix(),
+                (const float(*)[4])Camera_GetProjectionMatrix(),clip,ambient);
         }
-        for (poolOffset = 0, thr = 1.0f; j < WATERFX_MAX_SPLASHES; poolOffset += 0x3c, j++)
-        {
-            s = (WaterParticle*)(gWaterfxSplashPool + poolOffset);
-            if (s->life < thr)
-            {
-                waterfx_drawSplashBurst(s);
-            }
+    }
+
+
+    if(wake_capture && wakes_enabled){
+        unsigned mix=(unsigned)gReflectionKColor.r|((unsigned)gReflectionKColor.g<<8)|
+            ((unsigned)gReflectionKColor.b<<16)|((unsigned)gReflectionKColor.a<<24);
+        unsigned instance_count=0;
+        for(unsigned i=0;i<WATERFX_POOL_SIZE;i++){
+            const WaterEntry *g=(const WaterEntry*)(gWaterfxWakePool+i*0x1c);
+            if(!g->active || g->f18)continue;
+            MatrixTransform dp={0};dp.x=g->x;dp.y=g->y;dp.z=g->z;
+            dp.scale=g->scale;dp.rotX=g->rot;tint[3]=(u8)g->active;
+            /* Original matrix math/map-origin adjustment; no GX geometry or
+             * material replay. The native owner consumes its published rows. */
+            Camera_LoadModelViewMatrix(obj,renderParam,&dp,1.f,WATERFX_ZERO,NULL);
+            memcpy(native_water_instances[instance_count].view,gCameraModelViewMatrix,sizeof native_water_instances[0].view);
+            native_water_instances[instance_count++].alpha=tint[3];
         }
-        if (gWaterfxDropCount != 0)
-        {
-            waterfx_setupSplashDropPointRender();
-        }
-        for (i = 0, poolOffset = 0; i < WATERFX_POOL_SIZE; poolOffset += 0x1c, i++)
-        {
-            d = (WaterDrop*)(gWaterfxDropPool + poolOffset);
-            if (d->parentIdx != -1)
-            {
-                f32 vx, vy, vz;
-                GXBegin(GX_POINTS, GX_VTXFMT2, 1);
-                vz = d->z - playerMapOffsetZ;
-                vy = d->y;
-                vx = d->x - playerMapOffsetX;
-                GXPosition3f32(vx, vy, vz);
-            }
-        }
-        if (gWaterfxWakeCount != 0)
-        {
-            setupReflectionDistortTev(gWaterfxWakeTexture);
-        }
-        for (poolOffset = 0, j = 0, descriptorOffset = 0, vertexOffset = 0;
-             j < WATERFX_POOL_SIZE;
-             j++, descriptorOffset += 0x20, poolOffset += 0x1c, vertexOffset += 0x40)
-        {
-            g = (WaterEntry*)(gWaterfxWakePool + poolOffset);
-            if (g->active != 0 && g->f18 == 0)
-            {
-                setTextColor((void*)(uintptr_t)obj, 0xff, 0xff, 0xff, (u8)g->active);
-                dp.x = g->x;
-                dp.y = g->y;
-                dp.z = g->z;
-                dp.scale = g->scale;
-                dp.rotX = g->rot;
-                dp.rotZ = 0;
-                dp.rotY = 0;
-                Camera_LoadModelViewMatrix(obj, renderParam, &dp, 1.0f, WATERFX_ZERO,
-                                           NULL);
-                loadReflectionTexMtxs();
-                lightmapDrawTriangleList(gWaterfxWakeVtx + vertexOffset,
-                                  gWaterfxWakeVtxDesc + descriptorOffset, 2);
-            }
-        }
-        Rcp_ResetRenderState();
+        fh_pica_water_sheet_batch(0,wake_capture,native_water_instances,instance_count,
+            (const float(*)[4])Camera_GetProjectionMatrix(),reflected,clip,tint,mix,heavy);
     }
 }
 
@@ -799,6 +775,9 @@ void waterfx_onMapSetup(void)
 
 void waterfx_release(void)
 {
+    fh_pica_splash_release();
+    fh_pica_drops_release();
+    fh_pica_water_sheet_release();native_wake_ready=native_ripple_ready=0;
     if (gWaterfxRippleVtxDesc != NULL)
     {
         mm_free(gWaterfxRippleVtxDesc);

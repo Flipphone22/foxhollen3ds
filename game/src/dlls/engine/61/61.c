@@ -1,3 +1,12 @@
+#include "main/texture.h"
+#include "fh_pica_hud.h"
+static void *fh_pica_hud_asset(int id){
+    void *texture=textureLoadAsset(id);fh_pica_game_hud_loaded(texture);return texture;
+}
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
 #include "dlls/object_descriptor.h"
 #include "track/intersect_hud.h"
 #include "main/dll/dll_003D_titlemenuitem.h"
@@ -367,7 +376,7 @@ void TitleMenuItem_loadTextures(void)
     {
         if (gTitleMenuItemTextures[i] == NULL)
         {
-            gTitleMenuItemTextures[i] = textureLoadAsset(gTitleMenuItemTextureIds[i]);
+            gTitleMenuItemTextures[i] = fh_pica_hud_asset(gTitleMenuItemTextureIds[i]);
         }
     }
 }

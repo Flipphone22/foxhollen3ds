@@ -1,3 +1,12 @@
+#include "main/texture.h"
+#include "fh_pica_hud.h"
+static void *fh_pica_hud_asset(int id){
+    void *texture=textureLoadAsset(id);fh_pica_game_hud_loaded(texture);return texture;
+}
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
 #include "dlls/object_descriptor.h"
 #include "foxhollow_menu.h"
 #include "dolphin/os/OSReport.h"
@@ -333,7 +342,7 @@ void Link_copy(void* srcArg)
         {
             if (dst->texture == NULL)
             {
-                dst->texture = textureLoadAsset(src->textureAssetId);
+                dst->texture = fh_pica_hud_asset(src->textureAssetId);
             }
         }
         else
@@ -783,7 +792,7 @@ void Link_setup(TitleMenuTextEntry* items, int count, int selected, const char* 
 
             if (items[i].textureAssetId != -1)
             {
-                item->texture = textureLoadAsset(items[i].textureAssetId);
+                item->texture = fh_pica_hud_asset(items[i].textureAssetId);
             }
             else
             {
@@ -847,7 +856,7 @@ void Link_initialise(void)
 
     for (i = 0; i < 6; i++)
     {
-        linkTextures[i].texture = textureLoadAsset(linkTextures[i].assetId);
+        linkTextures[i].texture = fh_pica_hud_asset(linkTextures[i].assetId);
     }
 
     padSetStickRepeatDelay(10);

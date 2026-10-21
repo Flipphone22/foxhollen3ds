@@ -199,7 +199,7 @@ int Effect18_spawnObject(void* sourceObj, int effectId, PartFxSpawnParams* spawn
     case 0x714:
         cfg.initialAlpha = randomGetRange(0x1e, 0x28);
         if (extraArgs != 0) {
-            cfg.initialAlpha = (f32)(u32)cfg.initialAlpha * ((f32)(s32) * (int*)extraArgs / 255.0f);
+            cfg.initialAlpha = (f32)(u32)cfg.initialAlpha * ((f32)*(const u8*)extraArgs / 255.0f);
         }
         cfg.velocityZ = 0.05f * (f32)(s32)randomGetRange(0x12, 0x14);
         cfg.scale = 9e-05f * (f32)(s32)randomGetRange(0x28, 0x3c);

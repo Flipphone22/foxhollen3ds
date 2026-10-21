@@ -1,3 +1,4 @@
+#include "fh_ground_result.h"
 /*
  * DIMLavaSmas (DLL 0x1C7) - DIM lava-smash hazard; a surface object that
  * rises and smashes when struck by a certain hit type, sets surface-passable
@@ -54,6 +55,8 @@ void dimlavasmash_setBlockSurfaceFlags(MapBlockData* map, int disable, int surfa
             }
         }
     }
+
+    fh_native_ground_changed();
 }
 
 int dimlavasmash_SeqFn(GameObject* obj, int unused, ObjSeqState* animUpdate) {

@@ -1,0 +1,27 @@
+{
+  "sdk": {
+    "image": "devkitpro/devkitarm@sha256:15b79ce75822c289538d8153da5fa7aafe5e6adc32ad8a575a197beca0f0761b",
+    "layer_sha256": "3c5026e520aeec9e208399f6d0a62098d5ee4c13d8cca97cdb9adbc6bb56a1c0",
+    "reference": "melee-3ds/native-3ds/toolchain.lock.json"
+  },
+  "linux_base": {
+    "url": "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-amd64.tar.gz",
+    "sha256": "e77b6f10c2590cef872b33ee9f635a0e3fd1f57fb074c0e52b5c7f56147a0c86"
+  },
+  "azahar": {
+    "version": "2126.1.2",
+    "source_commit": "9e6f523a57fac9564ac0bf8286db3c3702d301ec",
+    "url": "https://github.com/azahar-emu/azahar/releases/download/2126.1.2/azahar.AppImage",
+    "sha256": "1ea15020334ee2e8fd16fbb3911fa7eafa8111e311c54dd4387b61b2ea742df6"
+  },
+  "makerom": {
+    "url": "https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.19.0/makerom-v0.19.0-ubuntu_x86_64.zip",
+    "sha256": "287b809dec064e0ad597e3d272c49ecb7eed41693d5ee6fef9d8a8aa24c2497e",
+    "member": "makerom"
+  },
+  "bannertool": {
+    "url": "https://github.com/diasurgical/bannertool/releases/download/1.2.0/bannertool.zip",
+    "sha256": "69768596f836acb3e3aeaa66e47c6ba560dde813c6dfcd33c8afc25fe29b7524",
+    "member": "linux-x86_64/bannertool"
+  }
+}

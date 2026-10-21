@@ -62,13 +62,13 @@ typedef struct BaddieState {
             u8 paletteSlot; /* indexes the palette table (paletteIndex = gIceBaddiePaletteIndexTable[slot]) */
             u8 unkBD[0xC4 - 0xBD];
             u8 sphereMapFadeFlags;
-            u8 padC5[0x118 - 0xC5 + 12];
+            u8 padC5[0x118 - 0xC5 + 12 - 24];
             f32 unk118; /* a local-space point carried through a reparent exactly like
         anim.localPos: player.c playerReparentPreservingWorldTransform pushes it to world space through the old
         parent and pulls it back through the new one. No other reader in the tree. */
             f32 unk11C;
             f32 unk120;
-            u8 unk124[0x19C - 0x124 + 4];
+            u8 unk124[0x19C - 0x124];
             s16 spawnRotY; /* pair copied into the spawn-setup shorts; restored into anim.rotY */
             s16 spawnRotZ; /* restored into anim.rotZ */
             u8 unk1A0[0x1B0 - 0x1A0];
@@ -92,7 +92,7 @@ typedef struct BaddieState {
  * riders/controllers to enable ground handling. */
 #define BADDIE_SURFACE_HAS_NEARBY_FLOOR 0x10
             s8 surfaceFlags; /* per-frame ground/surface contact flags, same field the dll_00C9 enemy view calls surfaceFlags; bits 0x1/0x2/0x10/0x20 are ground-contact channels (mask 0x33 = "touching ground at all") */
-            u8 unk265[0x26C - 0x265];
+            u8 unk265[0x26C - 0x265 + 28];
         };
     };
     void* contactObj; /* GameObject*; its anim.romDefNo (0x5d/0x99/0x1db/0x223) switches a sfx override (intersect.c) */
@@ -306,5 +306,25 @@ STATIC_ASSERT(offsetof(GroundBaddieState, pathRadius) == 0x3E4);
 STATIC_ASSERT(offsetof(GroundBaddieState, targetState) == 0x402);
 STATIC_ASSERT(offsetof(GroundBaddieState, lastHitSphereIndex) == 0x40A);
 STATIC_ASSERT(offsetof(GroundBaddieState, control) == 0x40C);
+
+
+/* Generated ARM adaptation: desktop TrackHitResults grows by 24 bytes and
+ * TrackBBoxHit by another four. Preserve their aliases, not desktop padding.
+ * The tail remains at its previous ARM offsets to limit this fix's scope. */
+#define FH_ACTOR_ALIAS(a,b) _Static_assert(offsetof(BaddieState,a)==offsetof(BaddieState,curvesCollision)+offsetof(CurvesCollisionState,b), "Actor collision alias: " #a)
+FH_ACTOR_ALIAS(unk118,localPointTarget);
+FH_ACTOR_ALIAS(spawnRotY,tiltPitch);
+FH_ACTOR_ALIAS(unk1B0,resultFloorGap);
+FH_ACTOR_ALIAS(waterDepth,resultCeilingY);
+FH_ACTOR_ALIAS(waterSurfaceY,resultWaterY);
+FH_ACTOR_ALIAS(physicsActive,subtype);
+FH_ACTOR_ALIAS(contactSfxFlags,pointCounts);
+FH_ACTOR_ALIAS(bboxTraceFlags,primaryHitType);
+FH_ACTOR_ALIAS(groundContact,localPointHitMask);
+FH_ACTOR_ALIAS(surfaceFlags,surfaceFlags);
+#undef FH_ACTOR_ALIAS
+_Static_assert(sizeof(void*)==4,"Native actor header requires 32-bit pointers");
+_Static_assert(sizeof(BaddieState)==0x370,"Preserve ARM actor allocation size");
+_Static_assert(offsetof(BaddieState,controlMode)==0x288,"Preserve ARM control tail");
 
 #endif /* MAIN_DLL_BADDIE_STATE_H_ */

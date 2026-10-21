@@ -1,4 +1,4 @@
-#include "hw_pc_internal.h"
+#include "fh_musyx_internal.h"
 
 void salPCConvertStudioCycle(s32 *output, u32 outputFrames, u32 outputRate, u64 outputTick,
                              const s32 *input, u32 inputFrames, u32 inputRate, u64 inputTick,

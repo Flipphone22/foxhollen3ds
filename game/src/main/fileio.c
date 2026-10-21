@@ -147,6 +147,8 @@ int DVDRead(DVDFileInfo* fileInfo, void* buf, s32 size, s32 offset)
                 waitNextFrame();
             }
             dvdCheckError();
+            extern void fh_dvd_wait_pending(DVDFileInfo*);
+            fh_dvd_wait_pending(fileInfo);
             if (resetSeen)
             {
                 mmFreeTick(0);

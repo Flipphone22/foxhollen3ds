@@ -1,4 +1,13 @@
 #include "main/texture.h"
+#include "fh_pica_hud.h"
+static void *fh_pica_hud_asset(int id){
+    void *texture=textureLoadAsset(id);fh_pica_game_hud_loaded(texture);return texture;
+}
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
+#include "main/texture.h"
 #include "string.h"
 #include "track/intersect_hud.h"
 #include "main/gametext_command.h"
@@ -152,8 +161,8 @@ void WarpstoneUI_release(void) {
 }
 
 void WarpstoneUI_initialise(void) {
-    gWarpStoneUiTextureA = textureLoadAsset(WARPSTONEUI_TEXTURE_A);
-    gWarpStoneUiTexture = textureLoadAsset(WARPSTONEUI_TEXTURE_B);
+    gWarpStoneUiTextureA = fh_pica_hud_asset(WARPSTONEUI_TEXTURE_A);
+    gWarpStoneUiTexture = fh_pica_hud_asset(WARPSTONEUI_TEXTURE_B);
     gWarpStoneUiFadeAlpha = 0.0f;
 }
 

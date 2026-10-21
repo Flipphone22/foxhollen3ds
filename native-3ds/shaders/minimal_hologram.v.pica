@@ -1,0 +1,57 @@
+; Original pause hologram: skinned position, projected colour and raw-normal mask.
+; Shares the model attribute/palette ABI. No per-vertex CPU texgen or extra draw.
+.fvec bones[66], projection[4], tint, uvscale, maskscale, decode
+.fvec projected[3], normal_uv[2]
+.constf constants(0.0,1.0,0.0,0.0)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0
+.out outq texcoord0w
+.out outmask texcoord1
+.proc main
+    mul r4.xyz, decode.x, v0
+    add r4.xyz, r4, v5
+    mov r4.w, constants.y
+    mul r5.x, decode.w, v4.z
+    mova a0.x, v4.x
+    dp4 r0.x, bones[a0.x], r4
+    dp4 r0.y, bones[a0.x+1], r4
+    dp4 r0.z, bones[a0.x+2], r4
+    cmp v4.x, eq, eq, v4.y
+    ifc cmp.x
+        mov r0.w, constants.y
+    .else
+        mova a0.x, v4.y
+        dp4 r1.x, bones[a0.x], r4
+        dp4 r1.y, bones[a0.x+1], r4
+        dp4 r1.z, bones[a0.x+2], r4
+        add r2.x, constants.y, -r5.x
+        mul r0.xyz, r0, r5.x
+        mad r0.xyz, r1, r2.x, r0
+        mov r0.w, constants.y
+    .end
+    dp4 outpos.x, projection[0], r0
+    dp4 outpos.y, projection[1], r0
+    dp4 outpos.z, projection[2], r0
+    dp4 outpos.w, projection[3], r0
+    mov outcolor, constants.yyyy
+    ; GX texgen reads the original position, before native bind-tail addition.
+    mul r4.xyz, decode.x, v0
+    dp4 r1.x, projected[0], r4
+    dp4 r1.y, projected[1], r4
+    dp4 r1.z, projected[2], r4
+    mul r1.xy, uvscale, r1
+    mov outuv.x, r1.x
+    add outuv.y, r1.z, -r1.y
+    mov outuv.zw, constants.xxxy
+    mov outq, r1.zzzz
+    mov r2.xyz, v3
+    mov r2.w, constants.y
+    dp4 r1.x, normal_uv[0], r2
+    dp4 r1.y, normal_uv[1], r2
+    mul r1.xy, maskscale, r1
+    mov outmask.x, r1.x
+    add outmask.y, constants.y, -r1.y
+    mov outmask.zw, constants.xxxy
+    end
+.end

@@ -1,3 +1,12 @@
+#include "fh_pica_diffuse_map.h"
+#include "fh_pica_specular.h"
+#include "fh_graphics_options.h"
+#include "fh_minimal_graphics.h"
+#include "fh_platform.h"
+#include "fh_pica_scene.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "dolphin/math.h"
 #include "main/texture.h"
 #include "game/objects/object.h"
@@ -279,8 +288,15 @@ void Rcp_UpdateDistortionTextures(void) {
             gxLoadObjectLights(model[0], lights);
             lightGetColor(0, &outColor.r, &outColor.g, &outColor.b);
             GXSetChanAmbColor(GX_COLOR0, outColor);
+            if (fh_minimal_enabled) {
+                FhTexture destination;
+                Texture* output=(Texture*)((RcpDistortSlot*)slots[0])[i].texture;
+                if (fh_gx_texture_view(textureGetGXTexObj(output),&destination))
+                    fh_minimal_sphere_update(i,&destination);
+            } else {
             Rcp_DrawWarpDistortionMesh((f32)(i * 0x20), 0.0f);
             GXCopyTex(((RcpDistortSlot*)slots[0])[i].texture + sizeof(Texture), (i == clearSlot) ? GX_TRUE : GX_FALSE);
+            }
             tex = (Texture*)((RcpDistortSlot*)slots[0])[i].texture;
             if (tex->preloaded != 0) {
                 GXPreLoadEntireTexture(textureGetGXTexObj((Texture*)tex), textureGetGXTexRegion((Texture*)tex));
@@ -405,9 +421,115 @@ void Rcp_InitDistortionEffects(void) {
     gRcpDistortSlots[gRcpDistortSlotIndex++].mode = 0;
     gRcpDistortSlots[gRcpDistortSlotIndex++].mode = 0;
     gRcpDistortTexture = textureLoadAsset(RCP_DISTORT_TEXTURE_ID);
+    if(fh_pica_scene_actors) {
+        FhTexture image;
+        if(!fh_gx_texture_view(textureGetGXTexObj(gRcpDistortTexture),&image))
+            fh_platform_panic("PICA specular source texture view");
+        fh_pica_specular_prepare(&image);
+        fh_pica_specular_prepare_half();
+        fh_pica_diffuse_map_prepare();
+    }
+
 }
-RcpDistortConfig gRcpDistortConfigs[6] ALIGN_DECL(8) = {
+RcpDistortConfig gRcpDistortConfigs[6] __attribute__((aligned(8))) = {
     {0.5f, 1.0f}, {0.5f, 0.5f}, {0.4f, 1.0f}, {0.3f, 0.8f}, {0.2f, 1.0f}, {0.4f, 0.5f},
 };
 RcpDistortSlot gRcpDistortSlots[6];
-u8 gRcpWarpDistortDisplayList[0x6640] ALIGN_DECL(32);
+u8 gRcpWarpDistortDisplayList[0x6640] __attribute__((aligned(32)));
+
+_Static_assert(__alignof__(gRcpDistortConfigs) >= 8, "Native alignment: gRcpDistortConfigs");
+
+_Static_assert(__alignof__(gRcpWarpDistortDisplayList) >= 32, "Native alignment: gRcpWarpDistortDisplayList");
+
+
+#include "main/shader.h"
+
+static void fh_pica_game_specular(void) {
+    if(!(fh_graphics_options&FH_GRAPHICS_SPECULAR) ||
+       (fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_ACTORS|FH_GRAPHICS_NO_LIGHTING|FH_GRAPHICS_NO_ACTOR_TEX)))return;
+    FhPicaSpecularState states[3]={0};unsigned mask=0;
+    skyApplyLightSlot(2);
+    ModelLightStruct *lights[2]={skyGetSunLight(),skyGetMoonLight()};
+    if(!lights[0] || !lights[1])return;
+    /* Sky's source sun/moon are directional. Do not treat arbitrary point
+     * lights as these maps, nor mutate the lights' original game state. */
+    if(lights[0]->lightKind!=4 || lights[1]->lightKind!=4)
+        fh_platform_panic("PICA specular non-directional sky light");
+    for(unsigned i=0;i<3;i++) {
+        RcpDistortSlot *slot=gRcpDistortSlots+i;
+        if(!slot->texture || !((Texture*)slot->texture)->refCount ||
+           slot->mode!=1 || slot->group!=gRcpDistortGroup)continue;
+        FhPicaSpecularState *s=states+i;mask|=1u<<i;
+        s->attenuation[0]=slot->params[0]*.5f;s->attenuation[1]=1.f-s->attenuation[0];
+        s->attenuation[2]=slot->params[1]*.5f;s->attenuation[3]=1.f-s->attenuation[2];
+        s->material[0]=(u8)((slot->colR*slot->scaleR)>>8)/255.f;
+        s->material[2]=(u8)((slot->colB*slot->scaleB)>>8)/255.f;
+        s->material[3]=1;
+        for(unsigned c=0;c<2;c++) {
+            ModelLightStruct *l=lights[c];
+            s->direction[c][0]=-l->viewDirX;s->direction[c][1]=-l->viewDirY;s->direction[c][2]=-l->viewDirZ;
+            Vec half={-l->viewDirX,-l->viewDirY,1.f-l->viewDirZ};
+            float q=half.x*half.x+half.y*half.y+half.z*half.z;
+            if(q>0){float scale=1.f/sqrtf(q);half.x*=scale;half.y*=scale;half.z*=scale;}
+            s->half_direction[c][0]=half.x;s->half_direction[c][1]=half.y;s->half_direction[c][2]=half.z;
+            s->diffuse_alpha[c]=(c?.5f:1.5f)*l->diffuseColor[3]/255.f;
+        }
+    }
+    fh_pica_specular_update(mask,states);
+}
+
+void fh_pica_game_environment(void) {
+    fh_pica_game_specular();
+#if FH_PICA_ACTOR_LIGHTING_EXPERIMENT
+    /* Match the source mode-0 slots, masks, group and light-color selection.
+     * Native PICA receives live light parameters; no source GX state replay. */
+    unsigned diffuse_enabled=(fh_graphics_options&FH_GRAPHICS_DIFFUSE_MAPS) &&
+        !(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_ACTORS|FH_GRAPHICS_NO_LIGHTING|FH_GRAPHICS_NO_ENVIRONMENT|FH_GRAPHICS_NO_ACTOR_TEX));
+    if(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_ACTORS|
+                          FH_GRAPHICS_NO_LIGHTING|FH_GRAPHICS_NO_ENVIRONMENT)) {
+        /* Specular takes its independent snapshot before this function body.
+         * Preserve the source group boundary even with no environment consumer. */
+        gRcpDistortGroup=0;return;
+    }
+    FhPicaDiffuseMapState maps[3];unsigned diffuse_mask=0;
+    for(unsigned i=3;i<6;i++) {
+        RcpDistortSlot *slot=gRcpDistortSlots+i;
+        if(!slot->texture || !((Texture*)slot->texture)->refCount ||
+           slot->mode!=0 || slot->group!=gRcpDistortGroup)continue;
+        FhPicaEnvironment state={0};ModelLightStruct *lights[8];s32 count=0;
+        skyApplyLightSlot(5-i);
+        modelLightStruct_selectObjectLights(slot->model,lights,8,&count,4);
+        GXColor ambient={0};lightGetColor(0,&ambient.r,&ambient.g,&ambient.b);
+        state.ambient[0]=ambient.r/255.f;state.ambient[1]=ambient.g/255.f;state.ambient[2]=ambient.b/255.f;
+        state.count=count;
+        for(unsigned j=0;j<(unsigned)count;j++) {
+            ModelLightStruct *l=lights[j];
+            state.direction[j][0]=-l->viewDirX;state.direction[j][1]=-l->viewDirY;state.direction[j][2]=-l->viewDirZ;
+            for(unsigned c=0;c<3;c++)state.color[j][c]=l->diffuseColor[c]/255.f;
+        }
+        fh_pica_environment_update(5-i,&state);
+        if(diffuse_enabled){
+            FhPicaDiffuseMapState *map=maps+(5-i);memset(map,0,sizeof(*map));
+            map->count=count;memcpy(map->ambient,state.ambient,3*sizeof(float));
+            Vec raw={0},transformed={0};
+            if(slot->model){
+                raw.x=slot->model->anim.localPosX;raw.y=slot->model->anim.localPosY;raw.z=slot->model->anim.localPosZ;
+                Vec world={raw.x-playerMapOffsetX,raw.y,raw.z-playerMapOffsetZ};
+                PSMTXMultVec((MtxPtr)Camera_GetViewMatrix(),&world,&transformed);
+            }
+            for(unsigned j=0;j<(unsigned)count;j++){
+                ModelLightStruct *l=lights[j];
+                if(l->lightKind!=4)fh_platform_panic("PICA diffuse source light kind");
+                const Vec *origin=l->transformMode?&raw:&transformed;
+                map->position[j][0]=l->viewDirX*-100000.f+origin->x;
+                map->position[j][1]=l->viewDirY*-100000.f+origin->y;
+                map->position[j][2]=l->viewDirZ*-100000.f+origin->z;
+                memcpy(map->color[j],state.color[j],3*sizeof(float));
+            }
+            diffuse_mask|=1u<<(5-i);
+        }
+    }
+    if(diffuse_mask)fh_pica_diffuse_map_update(diffuse_mask,maps);
+    gRcpDistortGroup=0;
+#endif
+}

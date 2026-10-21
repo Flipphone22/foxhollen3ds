@@ -1,3 +1,4 @@
+#include "fh_pica_scene.h"
 /* Applies a game-bit-controlled XYZ offset to map-block polygons and display-list bounds. */
 #include "dlls/objects/316_XYZAnimator.h"
 
@@ -187,6 +188,7 @@ void XyzAnimator_applyToMapBlock(XyzAnimatorPlacement* placement, XyzAnimatorSta
         }
     }
     DCStoreRange((void*)blockData->vertices, (u32)blockData->vertexCount * 6);
+    fh_pica_world_positions_changed(blockData);
     index = 0;
     dataOffset = index;
     for (; index < (int)(u32)blockData->displayListCount; index++) {

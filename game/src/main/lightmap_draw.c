@@ -1,3 +1,9 @@
+#include "fh_pica_world_deferred.h"
+extern unsigned fh_hardware_is_new;
+#include "fh_pica_glow.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "main/frame_timing.h"
 #include "sys/objects.h"
 #include "main/shader.h"
@@ -44,6 +50,7 @@
 extern f32 widescreenAspect;
 
 void sceneDraw(void);
+void fh_pica_game_deferred_draw(const FhPicaWorldDeferredEntry*,MapBlockData*);
 void sceneDrawTransparentPolys(void);
 
 
@@ -109,7 +116,8 @@ int isDrawDistanceEnabled(void) { return renderFlags & RENDERFLAG_DRAW_DISTANCE;
 
 int setWidescreen(u8 v)
 {
-    if (fhConfigScreenStyleIsForced())
+    v = 0; /* Native 5:3 screen, original HUD layout. */
+    if (0 && fhConfigScreenStyleIsForced())
     {
         v = (u8)fhConfigScreenStyleIsWide();
     }
@@ -501,13 +509,13 @@ void lightmapDrawQueuedObject(GameObject* obj)
         objRender(0, 0, 0, 0, obj, 1);
         Camera_ApplyDecalViewport();
         shadow = (ObjModelState*)(obj->anim.modelState);
-        if (shadow != NULL && shadow->shadowCastSlot != NULL)
+        if (!fh_pica_scene_actors && shadow != NULL && shadow->shadowCastSlot != NULL)
         {
-            objShadowRender(obj, 0, 0, framesThisStep);
+            if (!fh_render_budget_strip) objShadowRender(obj, 0, 0, framesThisStep);
         }
-        else if (obj->anim.modelInstance->shadowType == OBJ_SHADOW_TYPE_CRASH)
+        else if (obj->anim.modelInstance->shadowType == OBJ_SHADOW_TYPE_CRASH || obj->anim.modelInstance->shadowType == OBJ_SHADOW_TYPE_BIG_BOX || obj->anim.modelInstance->shadowType == OBJ_SHADOW_TYPE_MODEL_GEOMETRIC)
         {
-            objDrawGroundShadow(obj, model);
+            if (fh_pica_scene_actors) objDrawGroundShadow(obj, model);
         }
         Camera_ApplyFullViewport();
     }
@@ -535,6 +543,7 @@ void sceneDrawTransparentPolys(void)
     entries = (LightmapDrawEntry*)gLightmapDrawQueue;
     for (; i < gLightmapDrawQueueCount; i++)
     {
+        if (fh_render_budget_strip && ((!fh_pica_scene_actors && entries[i].type==1) || entries[i].type==2 || (!fh_pica_scene_actors && entries[i].type==3) || (!fh_pica_scene_actors && entries[i].type==7) || entries[i].type==8)) continue;
         switch (entries[i].type)
         {
         case 0:
@@ -569,13 +578,7 @@ void sceneDrawTransparentPolys(void)
             Camera_ApplyFullViewport();
             break;
         case 4:
-            item.block = entries[i].arg1.block;
-            GXSetChanCtrl(GX_COLOR0, GX_TRUE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHT_NULL, GX_DF_NONE, GX_AF_NONE);
-            GXSetChanCtrl(GX_ALPHA0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHT_NULL, GX_DF_NONE, GX_AF_NONE);
-            lightmapSetObjAmbColor();
-            PSMTXConcat((MtxPtr)Camera_GetViewMatrix(), item.block->transform, (MtxPtr)m);
-            setupToRenderMapBlock(item.block, m);
-            mapBlockRenderTransparent(entries[i].arg0.bounds, entries[i].arg1.block, m);
+            fh_pica_game_deferred_draw((const FhPicaWorldDeferredEntry*)entries[i].arg0.bounds,entries[i].arg1.block);
             break;
         case 5:
             item.block = entries[i].arg1.block;
@@ -596,7 +599,9 @@ void sceneDrawTransparentPolys(void)
             mapBlockRenderMain(entries[i].arg0.bounds, entries[i].arg1.block, m);
             break;
         case 7:
+            if(i==0 || entries[i-1].type!=7)fh_pica_glow_group_begin();
             drawGlow(entries[i].arg0.value, entries[i].arg1.value);
+            if(i+1==gLightmapDrawQueueCount || entries[i+1].type!=7)fh_pica_glow_group_end();
             break;
         case 8:
             waterFxDraw();

@@ -1,3 +1,12 @@
+#include "main/texture.h"
+#include "fh_pica_hud.h"
+static void *fh_pica_hud_asset(int id){
+    void *texture=textureLoadAsset(id);fh_pica_game_hud_loaded(texture);return texture;
+}
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
 #include "track/intersect_hud.h"
 #include "main/gametext_shared_internal.h"
 #include "main/gametext.h"
@@ -205,9 +214,9 @@ void subtitleFreeBoxTextures(int mode) {
 void subtitleLoadBoxTextures(int mode) {
     switch (mode) {
     case 3:
-        gSubtitleBoxTextures[0] = textureLoadAsset(TEXTRENDER_TEXTURE_SUBTITLE_BOX_LEFT);
-        gSubtitleBoxTextures[1] = textureLoadAsset(TEXTRENDER_TEXTURE_SUBTITLE_BOX_MID);
-        gSubtitleBoxTextures[2] = textureLoadAsset(TEXTRENDER_TEXTURE_SUBTITLE_BOX_RIGHT);
+        gSubtitleBoxTextures[0] = fh_pica_hud_asset(TEXTRENDER_TEXTURE_SUBTITLE_BOX_LEFT);
+        gSubtitleBoxTextures[1] = fh_pica_hud_asset(TEXTRENDER_TEXTURE_SUBTITLE_BOX_MID);
+        gSubtitleBoxTextures[2] = fh_pica_hud_asset(TEXTRENDER_TEXTURE_SUBTITLE_BOX_RIGHT);
         break;
     }
 }

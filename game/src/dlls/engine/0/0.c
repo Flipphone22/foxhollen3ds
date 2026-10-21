@@ -1,3 +1,18 @@
+#include "fh_pica_hologram.h"
+#include "fh_pica_ui_model.h"
+#include "fh_pica_hud.h"
+#include "main/texture.h"
+#include "fh_pica_hud.h"
+static void *fh_pica_hud_asset(int id){
+    void *texture=textureLoadAsset(id);fh_pica_game_hud_loaded(texture);return texture;
+}
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "dlls/object_descriptor.h"
 #include "main/dll/ppcwgpipe_struct.h"
 #include "dolphin/mtx.h"
@@ -781,6 +796,7 @@ void gameUiLoadResources(void)
         object = objSetupObject(Obj_AllocObjectSetup(0x20, GAMEUI_CHILD_OBJ_COMM_CUBE), 4, -1, -1, NULL);
         gGameUiCommCubeObjects[0] = object;
         ObjModel_SetRenderCallback((u8*)object->anim.modelBanks[0], pauseMenuHoloRenderFn);
+            if(fh_pica_scene_actors)fh_pica_hologram_prepare(fh_native_scene_find(((ObjModel*)object->anim.modelBanks[0])->file));
 
         {
             GameObject* communicatorCube;
@@ -790,6 +806,7 @@ void gameUiLoadResources(void)
             communicatorCubes = (GameUiObjectPair*)gGameUiCommCubeObjects;
             communicatorCubes->objects[1] = communicatorCube;
             ObjModel_SetRenderCallback((u8*)communicatorCubes->objects[1]->anim.modelBanks[0], pauseMenuHoloRenderFn);
+            if(fh_pica_scene_actors)fh_pica_hologram_prepare(fh_native_scene_find(((ObjModel*)communicatorCubes->objects[1]->anim.modelBanks[0])->file));
         }
 
         j = 4;
@@ -856,6 +873,7 @@ void showDeathMenu(void)
 
 void gameUiSetupTexturedQuadTev(void* this, u8 a, s16 b, int c)
 {
+    if(fh_pica_scene_actors)return; /* Native material is already compiled at load. */
     GameUiMatrixWorkspace* matrices = (GameUiMatrixWorkspace*)lbl_803A87F0;
     GXColor colA = sQuadTevBaseColor;
     GXColor colB = sQuadTevKColor;
@@ -908,6 +926,27 @@ void gameUiSetupTexturedQuadTev(void* this, u8 a, s16 b, int c)
     GXClearVtxDesc();
     GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
     GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+}
+
+#include "main/rcp_dolphin_render.h"
+static void fh_callback_image(Texture* texture,const GXColor* color,unsigned constant_rgb,
+                              unsigned blend,unsigned depth_test,unsigned depth_write) {
+    FhMinimalCallbackMaterial *out=&fh_minimal_callback;
+    *out=(FhMinimalCallbackMaterial){.active=1,.constant_rgb=constant_rgb,
+        .blend=blend,.depth_test=depth_test,.depth_write=depth_write};
+    /* KAlpha callbacks intentionally leave RGB uninitialized. */
+    out->color[0]=out->color[1]=out->color[2]=255;
+    if(constant_rgb){out->color[0]=color->r;out->color[1]=color->g;out->color[2]=color->b;}
+    out->color[3]=color->a;
+    if(texture){
+        out->has_texture=fh_gx_texture_view(textureGetGXTexObj(texture),&out->texture);
+        if(!out->has_texture){out->color[3]=0;fh_minimal_rejected++;}
+        if(constant_rgb && texture->imageOffset){
+            GXTexObj mask;textureInitSecondaryGXTexObj(texture,&mask);
+            out->has_mask=fh_gx_texture_view(&mask,&out->mask);
+            if(!out->has_mask){out->color[3]=0;fh_minimal_rejected++;}
+        }
+    }
 }
 
 int pauseMenuHoloRenderFn(GameObject* obj, ObjModel* model, int renderOpIndex)
@@ -1013,13 +1052,50 @@ int pauseMenuHoloRenderFn(GameObject* obj, ObjModel* model, int renderOpIndex)
     GXClearVtxDesc();
     GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
     GXSetVtxDesc(GX_VA_NRM, GX_DIRECT);
+    if(fh_minimal_enabled) {
+        fh_minimal_hologram_calls++;
+        fh_callback_image((Texture*)tex0,&chanCol,1,1,0,0);
+        fh_minimal_callback.hologram=1;
+        fh_minimal_callback.cull_front=obj->anim.romDefNo==0x755;
+        fh_minimal_callback.mask_alpha=gTrickyHudIconKColor.a;
+        fh_minimal_callback.has_mask=fh_gx_texture_view(textureGetGXTexObj(tex2),&fh_minimal_callback.mask);
+        if(!fh_minimal_callback.has_mask){fh_minimal_callback.color[3]=0;fh_minimal_rejected++;}
+        for(unsigned r=0;r<3;r++)for(unsigned c=0;c<4;c++)fh_minimal_callback.projected[r][c]=m1[r][c];
+        for(unsigned r=0;r<2;r++)for(unsigned c=0;c<4;c++)fh_minimal_callback.normal_uv[r][c]=mtex[r][c];
+    }
     return 1;
 }
+#include "main/rcp_dolphin_render.h"
+static void fh_menu_image(Texture* image,const float rect[4],float z,const float uv[4],unsigned alpha,unsigned additive) {
+    GameUiMatrixWorkspace* matrices=(GameUiMatrixWorkspace*)lbl_803A87F0;
+    if(fh_pica_scene_actors){
+        if(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_HUD))return;
+        unsigned scissor[4];GXGetScissor(scissor,scissor+1,scissor+2,scissor+3);
+        fh_pica_hud_projected(fh_pica_hud_page(image),(const float(*)[4])Camera_GetProjectionMatrix(),
+            (const float(*)[4])matrices->view,rect,z,uv,0xffffff00u|alpha,0,additive,scissor);
+        return;
+    }
+
+    FhTexture source,mask;GXTexObj mask_obj;const FhTexture* secondary=NULL;
+    unsigned scissor[4];GXGetScissor(scissor,scissor+1,scissor+2,scissor+3);
+    if(!image || !fh_gx_texture_view(textureGetGXTexObj(image),&source)){fh_minimal_rejected++;return;}
+    if(image->imageOffset){
+        textureInitSecondaryGXTexObj(image,&mask_obj);
+        if(!fh_gx_texture_view(&mask_obj,&mask)){fh_minimal_rejected++;return;}
+        secondary=&mask;
+    }
+    /* The original C0/TEXC/K0 interpolation has constant K0=white, hence
+     * TEXC. Its alpha is A0*TEXA, replaced by A0*secondary when present. */
+    fh_minimal_projected_image(&source,secondary,(const float(*)[4])matrices->view,
+        rect,z,uv,0xffffff00u|alpha,0,additive,scissor);
+}
+
 void pauseMenuTextDrawFn(int x0, int y0, int x1, int y1, f32 u0, f32 v0, f32 u1, f32 v1)
 {
     GameUiMatrixWorkspace* matrices = (GameUiMatrixWorkspace*)lbl_803A87F0;
     f32 scale;
     s16 z;
+    if(!fh_pica_scene_actors){
     GXLoadPosMtxImm(matrices->view, 0);
     GXLoadNrmMtxImm(matrices->view, 0);
     GXSetCurrentMtx(0);
@@ -1027,6 +1103,7 @@ void pauseMenuTextDrawFn(int x0, int y0, int x1, int y1, f32 u0, f32 v0, f32 u1,
     GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
     GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
     GXSetCullMode(GX_CULL_NONE);
+    }
     x0 -= 0x500;
     y0 -= 0x3c0;
     x1 -= 0x500;
@@ -1036,6 +1113,25 @@ void pauseMenuTextDrawFn(int x0, int y0, int x1, int y1, f32 u0, f32 v0, f32 u1,
     y0 *= scale;
     x1 *= scale;
     y1 *= scale;
+
+    if(fh_pica_scene_actors){
+        if(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_HUD))return;
+        float rect[4]={(s16)(x0+0x500),(s16)(y0+0x3c0),(s16)(x1+0x500),(s16)(y1+0x3c0)};
+        float uv[4]={u0,v0,u1,v1};unsigned scissor[4];
+        GXGetScissor(scissor,scissor+1,scissor+2,scissor+3);
+        fh_pica_hud_projected(fh_pica_hud_text_page,(const float(*)[4])Camera_GetProjectionMatrix(),
+            (const float(*)[4])matrices->view,rect,(s16)(gPauseMenuTextZ<<2),uv,
+            fh_minimal_text_color,fh_pica_hud_text_alpha_only,0,scissor);
+        return;
+    }
+    if(fh_minimal_enabled){
+        float rect[4]={(s16)(x0+0x500),(s16)(y0+0x3c0),(s16)(x1+0x500),(s16)(y1+0x3c0)};
+        float uv[4]={u0,v0,u1,v1};unsigned scissor[4];
+        GXGetScissor(scissor,scissor+1,scissor+2,scissor+3);
+        fh_minimal_projected_image(&fh_minimal_text_texture,NULL,(const float(*)[4])matrices->view,
+            rect,(s16)(gPauseMenuTextZ<<2),uv,fh_minimal_text_color,fh_minimal_text_alpha_only,0,scissor);
+        return;
+    }
     GXBegin(GX_QUADS, GX_VTXFMT1, 4);
     z = (s16)(gPauseMenuTextZ << 2);
     GXPosition3s16((s16)(x0 + 0x500), (s16)(y0 + 0x3c0), z);
@@ -1060,6 +1156,11 @@ void pauseMenuDrawTextureRegion(void* this, f32 f1, f32 f2, int p4, u8 p5, int p
     v0 = (f32)(u32)p9 / ((Texture*)this)->height;
     u1 = (f32)(u32)(p6 + p8) / ((Texture*)this)->width;
     v1 = (f32)(u32)(p7 + p9) / ((Texture*)this)->height;
+
+    if(fh_minimal_enabled){
+        float rect[4]={(s16)f1,(s16)f2,(s16)(f1+(f32)(u32)(p6<<2)),(s16)(f2+(f32)(u32)(p7<<2))};
+        float uv[4]={u0,v0,u1,v1};fh_menu_image(this,rect,(s16)(p4<<2),uv,p5,0);return;
+    }
     GXBegin(GX_QUADS, GX_VTXFMT1, 4);
     GXPosition3s16(f1, f2, (s16)(p4 << 2));
     GXTexCoord2f32(u0, v0);
@@ -1105,6 +1206,11 @@ void gameUiDrawTextureRegion(void* texture, f32 x, f32 y, int depth, u8 alpha, i
         va = 0.0f;
         vb = tv;
     }
+
+    if(fh_minimal_enabled){
+        float rect[4]={(s16)x,(s16)y,(s16)(x+(f32)(u32)scaledWidth),(s16)(y+(f32)(u32)scaledHeight)};
+        float uv[4]={ua,va,ub,vb};fh_menu_image(texture,rect,(s16)(depth<<2),uv,alpha,!!(drawFlags&4));return;
+    }
     GXBegin(GX_QUADS, GX_VTXFMT1, 4);
     GXPosition3s16(x, y, (s16)(depth << 2));
     GXTexCoord2f32(ua, va);
@@ -1126,6 +1232,11 @@ void pauseMenuDrawElement(void* element, f32 fx, f32 fy, int depthZ, u8 paletteI
     dy = (((Texture*)element)->height << 2) * (u16)scalePercent / 256;
     fx = 4.0f * fx;
     fy = 4.0f * fy;
+
+    if(fh_minimal_enabled){
+        float rect[4]={(s16)fx,(s16)fy,(s16)(fx+(f32)(u32)dx),(s16)(fy+(f32)(u32)dy)};
+        float uv[4]={0,0,1,1};fh_menu_image(element,rect,(s16)(depthZ<<2),uv,paletteIndex,!!drawFlags);return;
+    }
     GXBegin(GX_QUADS, GX_VTXFMT1, 4);
     GXPosition3s16(fx, fy, (s16)(depthZ << 2));
     c0 = 0.0f;
@@ -1542,11 +1653,11 @@ void GameUI_initAirMeter(int a, int b)
     meter->unk0 = 0;
     meter->capacity = a;
     meter->fillWidth = 0;
-    meter->textures.bar.background = textureLoadAsset(b);
+    meter->textures.bar.background = fh_pica_hud_asset(b);
     meter->textures.bar.backgroundId = b;
-    meter->textures.bar.end = textureLoadAsset(0x5d4);
-    meter->textures.bar.filled = textureLoadAsset(0x5d3);
-    meter->textures.bar.empty = textureLoadAsset(0x5d2);
+    meter->textures.bar.end = fh_pica_hud_asset(0x5d4);
+    meter->textures.bar.filled = fh_pica_hud_asset(0x5d3);
+    meter->textures.bar.empty = fh_pica_hud_asset(0x5d2);
     airMeter = meter;
     meter->alpha = 0;
     meter->unk24 = 1.0f;
@@ -1562,8 +1673,8 @@ void GameUI_airMeterInitType0(int a, int b, int c)
     memset(meter, 0, sizeof(TrickyAirMeter));
     meter->unk0 = 0;
     meter->capacity = a;
-    meter->textures.segments.filled = textureLoadAsset(b);
-    meter->textures.segments.empty = textureLoadAsset(c);
+    meter->textures.segments.filled = fh_pica_hud_asset(b);
+    meter->textures.segments.empty = fh_pica_hud_asset(c);
     meter->segmentWidth = meter->textures.segments.filled->width;
     meter->yOffset = meter->textures.segments.filled->height;
     airMeter = meter;
@@ -1848,7 +1959,7 @@ void hudDrawTimedElement(int unused, void* element)
 
 void GameUI_showItemInfoPopupByTexture(s16 textureId, int displayDuration, int itemCount)
 {
-    void* t = textureLoadAsset(textureId);
+    void* t = fh_pica_hud_asset(textureId);
     gHudItemInfoPopup.texture = t;
     if (t == NULL)
         return;
@@ -1868,7 +1979,7 @@ void GameUI_showItemInfoPopup(s16 itemGamebit, int displayDuration, int itemCoun
         {
             if (row->ownedGameBit == itemGamebit)
             {
-                gHudItemInfoPopup.texture = textureLoadAsset(row->iconTextureId);
+                gHudItemInfoPopup.texture = fh_pica_hud_asset(row->iconTextureId);
                 break;
             }
             row++;
@@ -3151,7 +3262,7 @@ void hudDrawButtons(int cMenuArg0, int cMenuArg1, int cMenuArg2)
     if (hudYButtonItemIconTexture == NULL && yButtonItemTextureId > 0)
     {
         gHudYButtonItemTextureCache = yButtonItemTextureId;
-        hudYButtonItemIconTexture = textureLoadAsset(yButtonItemTextureId);
+        hudYButtonItemIconTexture = fh_pica_hud_asset(yButtonItemTextureId);
     }
     if (gHudStatusAlpha != zero)
     {
@@ -3691,7 +3802,7 @@ int cMenuSetItems(CMenuItemDef* itemsArg, char useTricky)
         {
             if (*ids > -1 && *texP2 == 0)
             {
-                *texP2 = textureLoadAsset(*ids);
+                *texP2 = fh_pica_hud_asset(*ids);
             }
             ids++;
             texP2++;
@@ -3713,6 +3824,7 @@ int cMenuRingModelRenderFn(GameObject* obj, ObjModel* model, int idx)
     gxSetZMode_(0, GX_ALWAYS, 0);
     gxSetPeControl_ZCompLoc_(0);
     GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+    if(fh_minimal_enabled) fh_callback_image(textureIdxToPtr((uintptr_t)renderOp->layers[0].texture),&cfg,1,1,0,0);
     return 1;
 }
 
@@ -3746,6 +3858,7 @@ int cMenuRingIconRenderFn(GameObject* obj, ObjModel* model, int idx)
     gxSetZMode_(0, GX_ALWAYS, 0);
     gxSetPeControl_ZCompLoc_(0);
     GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+    if(fh_minimal_enabled) fh_callback_image(slotIdx>=0 && slotIdx<=6?hud->visibleItemTextures[slotIdx]:NULL,&cfg,1,1,0,0);
     return 1;
 }
 void hudDrawCMenu(int p1, int p2, int p3)
@@ -4020,7 +4133,7 @@ void drawTrickyHudOverlay(int obj, int unused1, int unused2)
             {
                 if (gTrickyHudIconTextureIds[iconIndex] != -1)
                 {
-                    gTrickyHudCachedIconTexture = textureLoadAsset(gTrickyHudIconTextureIds[iconIndex]);
+                    gTrickyHudCachedIconTexture = fh_pica_hud_asset(gTrickyHudIconTextureIds[iconIndex]);
                 }
             }
         }
@@ -4505,7 +4618,7 @@ void pauseMenuDraw(int boxDrawParamA, int boxDrawParamB, int boxDrawParamC)
             {
                 if (gPauseMenuGridBackdropTexture == 0)
                 {
-                    gPauseMenuGridBackdropTexture = textureLoadAsset(0xbe7);
+                    gPauseMenuGridBackdropTexture = fh_pica_hud_asset(0xbe7);
                 }
                 if (gPauseMenuGridBackdropTexture != 0)
                 {
@@ -6241,7 +6354,7 @@ void pauseMenuUpdate(void)
                         {
                             texId = gCMenuTrickyAbilities[idx].iconTextureId;
                         }
-                        hud->textures3A8[i] = textureLoadAsset(texId);
+                        hud->textures3A8[i] = fh_pica_hud_asset(texId);
                         hud->texIds358[i] = texId;
                         i++;
                         k++;
@@ -6261,7 +6374,7 @@ void pauseMenuUpdate(void)
                         {
                             texId = gCMenuStaffAbilities[(u8)k].iconTextureId;
                         }
-                        hud->textures3A8[i] = textureLoadAsset(texId);
+                        hud->textures3A8[i] = fh_pica_hud_asset(texId);
                         hud->texIds358[i] = texId;
                         i++;
                         k++;
@@ -6273,21 +6386,21 @@ void pauseMenuUpdate(void)
                     {
                         texId = 0xc8a;
                     }
-                    hud->textures3A8[0x14] = textureLoadAsset(texId);
+                    hud->textures3A8[0x14] = fh_pica_hud_asset(texId);
                     hud->texIds358[0x14] = texId;
                     texId = 0xbf0;
                     if (mainGetBit(GAMEBIT_ITEM_FireflyLantern_Got))
                     {
                         texId = 0xc06;
                     }
-                    hud->textures3A8[0x15] = textureLoadAsset(texId);
+                    hud->textures3A8[0x15] = fh_pica_hud_asset(texId);
                     hud->texIds358[0x15] = texId;
                     texId = 0xbf0;
                     if (mainGetBit(GAMEBIT_ITEM_Viewfinder_Got))
                     {
                         texId = 0xc05;
                     }
-                    hud->textures3A8[0x16] = textureLoadAsset(texId);
+                    hud->textures3A8[0x16] = fh_pica_hud_asset(texId);
                     hud->texIds358[0x16] = texId;
                 }
                 pauseMenuUpdateFadeAndBack();
@@ -8875,9 +8988,9 @@ void GameUI_initialise(void)
     gGameUiScreenHeightOffset = height - 240;
     for (i = 0; i < 102; i++)
     {
-        ((void**)hudTextures)[i] = textureLoadAsset(gHudTextureIds[i]);
+        ((void**)hudTextures)[i] = fh_pica_hud_asset(gHudTextureIds[i]);
     }
-    p = textureLoadAsset(GAMEUI_TEXTURE_BLINK);
+    p = fh_pica_hud_asset(GAMEUI_TEXTURE_BLINK);
     gGameUiBlinkTexture = p;
     p->animationFrameStep = 40;
     gGameUiBlinkAnimFlags = 0x80000;
@@ -9066,3 +9179,44 @@ HudItemInfoPopup gHudItemInfoPopup;
 int lbl_803A9320[0x11];
 s16 lbl_803A8B48[0x98];
 Texture** hudTextures = ((CMenuHud*)lbl_803A87F0)->hudTextures;
+
+unsigned fh_pica_game_ui_kind(const void *callback){
+    return callback==(const void*)cMenuRingModelRenderFn?FH_PICA_UI_RING:
+           callback==(const void*)cMenuRingIconRenderFn?FH_PICA_UI_ICON:0;
+}
+void fh_pica_game_ui_materials(const FhSceneAsset *asset,const void *file,const void *object,unsigned kind){
+    const ModelFileHeader *header=file;const GameObject *obj=object;
+    const CMenuHud *hud=(const CMenuHud*)lbl_803A87F0;
+    for(unsigned i=0;i<header->renderOpCount;i++){
+        GXColor color=kind==FH_PICA_UI_RING?sCMenuRingModelColor:sCMenuRingIconColor;
+        FhPicaUiMaterial state={.kind=kind,.blend=1};color.a=obj->anim.renderAlpha;
+        if(kind==FH_PICA_UI_ICON){
+            int slot=header->renderOps[i].layers[0].materialId-1;
+            if(slot>=0 && slot<=6 && hud->visibleItemTextures[slot]){
+                if(!hud->visibleItemStates[slot])color.a=.3f*(f32)(u32)obj->anim.renderAlpha;
+                if(color.a)state.page=fh_pica_hud_page(hud->visibleItemTextures[slot]);
+            }else color.a=0;
+        }
+        state.rgba=(unsigned)color.r|((unsigned)color.g<<8)|((unsigned)color.b<<16)|((unsigned)color.a<<24);
+        fh_pica_material_ui(asset,i,&state);
+    }
+}
+
+int fh_pica_game_hologram_matches(const void *callback){return callback==(const void*)pauseMenuHoloRenderFn;}
+void fh_pica_game_hologram_state(const void *object,FhPicaHologram *out){
+    const GameObject *obj=object;
+    GameUiMatrixWorkspace *matrices=(GameUiMatrixWorkspace*)lbl_803A87F0;
+    Mtx m1,m3;Texture *disk;
+    /* Direct live effect parameters, derived from pauseMenuHoloRenderFn.
+     * Its indirect matrix is zero and its first color stage is overwritten.
+     * No discarded GX stages or per-vertex texture generation is executed. */
+    PSMTXConcat((MtxPtr)gCameraLightPerspectiveFlipYMatrix,matrices->object,m1);
+    float scale=.5f*(gPauseMenuMapSwivelCos*gPauseMenuMapSwivelCos);
+    PSMTXScale(m3,scale,scale,1.f);PSMTXConcat(m3,m1,m1);
+    PSMTXTrans(m3,.5f*(1.f-scale),.5f*(1.f-scale),0.f);PSMTXConcat(m3,m1,out->projected);
+    out->normal_uv[0][0]=gTrickyHudTexMtxScale;out->normal_uv[0][1]=0;out->normal_uv[0][2]=0;out->normal_uv[0][3]=.5f;
+    out->normal_uv[1][0]=0;out->normal_uv[1][1]=gTrickyHudTexMtxScale;out->normal_uv[1][2]=0;out->normal_uv[1][3]=.5f;
+    getNewShadowDiskTexture(&disk);out->mask_page=fh_pica_hud_page(disk);
+    out->alpha=sPauseMenuHoloChanColor.a;out->mask_alpha=gTrickyHudIconKColor.a;
+    out->cull_front=obj->anim.romDefNo==0x755;
+}

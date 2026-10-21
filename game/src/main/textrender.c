@@ -1,3 +1,10 @@
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "track/intersect_hud.h"
 #include "main/gametext_shared_internal.h"
 #include "main/mm.h"
@@ -719,22 +726,23 @@ void textRenderStr(char* str, GameTextBox* win, f32 x, f32 y, f32 lineH, int mod
                 if (curTexPage != g->page) {
                     curTexPage = g->page;
                     tex = gameTextFonts->textures[g->page];
-                    selectTexture(tex, 0);
+                    if(fh_pica_scene_actors && !(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_HUD)))fh_pica_hud_text_page=fh_pica_hud_page(tex);
+                    if(!fh_pica_scene_actors)selectTexture(tex, 0);
                     if (gGameTextFontMetrics[g->font].unk06 == 1) {
                         if (mode != 0) {
                             setTextColor(0, 0, 0, 0, gGameTextColorA);
                         } else {
                             setTextColor(0, 0xff, 0xff, 0xff, gGameTextColorA);
-                            gxTevResetStages();
-                            gxTevTextureTimesColor1Stage();
-                            gxTevCommitStages();
+                            if(!fh_pica_scene_actors)gxTevResetStages();
+                            if(!fh_pica_scene_actors)gxTevTextureTimesColor1Stage();
+                            if(!fh_pica_scene_actors)gxTevCommitStages();
                         }
                     } else {
                         setTextColor(0, gGameTextColorR, gGameTextColorG, gGameTextColorB, gGameTextColorA);
                         _textSetColor(0, gGameTextColorR, gGameTextColorG, gGameTextColorB, gGameTextColorA);
-                        gxTevResetStages();
-                        textRenderSetup();
-                        gxTevCommitStages();
+                        if(!fh_pica_scene_actors)gxTevResetStages();
+                        if(!fh_pica_scene_actors)textRenderSetup();
+                        if(!fh_pica_scene_actors)gxTevCommitStages();
                     }
                 }
             }
@@ -744,6 +752,13 @@ void textRenderStr(char* str, GameTextBox* win, f32 x, f32 y, f32 lineH, int mod
                 setTextColor(0, 0, 0, 0, 0);
             }
 
+
+            if (fh_minimal_enabled && !fh_pica_scene_actors) {
+                fh_minimal_text_texture=(FhTexture){0};
+                fh_gx_texture_view(textureGetGXTexObj(tex),&fh_minimal_text_texture);
+                fh_minimal_text_alpha_only=gGameTextFontMetrics[g->font].unk06!=1;
+            }
+            if(fh_pica_scene_actors)fh_pica_hud_text_alpha_only=gGameTextFontMetrics[g->font].unk06!=1;
             if (gameTextDrawFunc != NULL) {
                 f32 sH = 32.0f * tex->height;
                 f32 sW = 32.0f * tex->width;
@@ -752,8 +767,29 @@ void textRenderStr(char* str, GameTextBox* win, f32 x, f32 y, f32 lineH, int mod
             } else {
                 f32 sH = 32.0f * tex->height;
                 f32 sW = 32.0f * tex->width;
+
+                if (fh_pica_scene_actors) {
+                    if(!(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_HUD))){
+                    extern float hudMatrix[4][4];unsigned scissor[4];
+                    GXGetScissor(scissor,scissor+1,scissor+2,scissor+3);
+                    float rect[4]={(int)fx0,(int)fy0,(int)fx1,(int)fy1};
+                    float uv[4]={u0/sW,v0/sH,(u0+(f32)(g->width<<5))/sW,(v0+(f32)(g->height<<5))/sH};
+                    fh_pica_hud_quad(fh_pica_hud_text_page,(const float(*)[4])hudMatrix,rect,uv,
+                        fh_minimal_text_color,gGameTextFontMetrics[g->font].unk06!=1,scissor);
+                    }
+                } else if (fh_minimal_enabled) {
+                    extern float hudMatrix[4][4];FhTexture source;unsigned scissor[4];
+                    GXGetScissor(scissor,scissor+1,scissor+2,scissor+3);
+                    if (fh_gx_texture_view(textureGetGXTexObj(tex),&source)) {
+                        float rect[4]={(int)fx0,(int)fy0,(int)fx1,(int)fy1};
+                        float uv[4]={u0/sW,v0/sH,(u0+(f32)(g->width<<5))/sW,(v0+(f32)(g->height<<5))/sH};
+                        fh_minimal_quad(&source,(const float(*)[4])hudMatrix,rect,uv,fh_minimal_text_color,
+                            gGameTextFontMetrics[g->font].unk06!=1,scissor);
+                    }
+                } else {
                 textRenderChar((int)fx0, fy0, fx1, fy1, u0 / sW, v0 / sH, (u0 + (f32)(g->width << 5)) / sW,
                                (v0 + (f32)(g->height << 5)) / sH);
+                }
             }
 
             if (g->font == GAMETEXT_FONT_FLAG || g->font == GAMETEXT_FONT_FACE) {

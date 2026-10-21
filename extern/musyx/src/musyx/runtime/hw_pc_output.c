@@ -1,4 +1,4 @@
-#include "hw_pc_internal.h"
+#include "fh_musyx_internal.h"
 #include "musyx/hardware.h"
 #include "musyx/synth.h"
 
@@ -42,8 +42,7 @@ bool salPCExternalLeave(void) {
 bool sndPCConfigure(const SND_PC_CONFIG *requested) {
   if (sndActive || !requested ||
       (requested->mixRate < SAL_PC_MIN_RATE || requested->mixRate > SAL_PC_MAX_RATE) ||
-      (requested->channels != 2 && requested->channels != 4 && requested->channels != 6 &&
-       requested->channels != 8))
+      (requested->channels != 2))
     return false;
   config = *requested;
   return true;

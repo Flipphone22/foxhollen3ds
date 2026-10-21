@@ -1,0 +1,15 @@
+{
+  "url": "https://github.com/devkitPro/tex3ds",
+  "commit": "37220c696e873812df41af62d1db0b20c66661fe",
+  "tag": "v2.3.0",
+  "license": "ZLIB, complete notice retained in rg_etc1.h",
+  "upstream": {
+    "include/rg_etc1.h": "b9726623540b3eaa880ddb17e8c03364d682536be899c20e598cc137224507d8",
+    "source/rg_etc1.cpp": "ac0df9e450b49d7a3eec56d3887e70216626c4fefed871da96fa92b8b53ce2e9"
+  },
+  "adaptations": [
+    "Three potentially negative float refinement estimates convert to signed int before existing clamp.",
+    "Nine std::min calls explicitly name uint32_t to support newlib unsigned-long typedef."
+  ],
+  "scope": "Only rg_etc1 codec adapted. No tex3ds desktop frontend, Magick or PNG dependency in console converter."
+}

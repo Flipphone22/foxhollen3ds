@@ -1,3 +1,15 @@
+#include "fh_pica_lightning.h"
+#include "fh_pica_hud.h"
+#include <assert.h>
+#include "fh_lightning_phase_table.h"
+#include "fh_graphics_options.h"
+#include "fh_pica_weather.h"
+#include "fh_pica_hud.h"
+#include "fh_platform.h"
+#include "main/gx_scissor.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "dlls/object_descriptor.h"
 #include "main/newclouds_state.h"
 #include "main/newclouds.h"
@@ -96,6 +108,45 @@ static inline void snowFifoTexCoord2s16(s16 s, s16 t)
     GXTexCoord2s16(s, t);
 }
 
+static void fh_lightning_rot_phase(Mtx m, const Vec* axis, int phase) {
+  Vec vN;
+  f32 s;
+  f32 c;
+  f32 t;
+  f32 x;
+  f32 y;
+  f32 z;
+  f32 xSq;
+  f32 ySq;
+  f32 zSq;
+
+  assert(m && "MTXRotAxisRad():  NULL MtxPtr 'm' ");
+  assert(axis && "MTXRotAxisRad():  NULL VecPtr 'axis' ");
+
+  if(phase<0 || phase>1000){C_MTXRotAxisRad(m,axis,3.142f*(2.0f*(0.001f*(float)phase)));return;}
+  memcpy(&s,fh_lightning_phase_table[phase],4);
+  memcpy(&c,fh_lightning_phase_table[phase]+1,4);
+  t = 1 - c;
+  C_VECNormalize(axis, &vN);
+  x = vN.x;
+  y = vN.y;
+  z = vN.z;
+  xSq = (x * x);
+  ySq = (y * y);
+  zSq = (z * z);
+  m[0][0] = (c + (t * xSq));
+  m[0][1] = (y * (t * x)) - (s * z);
+  m[0][2] = (z * (t * x)) + (s * y);
+  m[0][3] = 0;
+  m[1][0] = ((y * (t * x)) + (s * z));
+  m[1][1] = (c + (t * ySq));
+  m[1][2] = ((z * (t * y)) - (s * x));
+  m[1][3] = 0;
+  m[2][0] = ((z * (t * x)) - (s * y));
+  m[2][1] = ((z * (t * y)) + (s * x));
+  m[2][2] = (c + (t * zSq));
+  m[2][3] = 0;
+}
 f32 lightningGetRemainingFraction(void)
 {
     LightningEffect* state;
@@ -183,8 +234,7 @@ static void lightningDrawStrand(f32* from, f32* to, u8 width, f32 segScale, int*
         total += (i + 1);
     }
     weight = 1.0f / total;
-    GXSetLineWidth(width, GX_TO_ONE);
-    GXBegin(GX_LINESTRIP, GX_VTXFMT2, segs + 1);
+    fh_pica_lightning_strand(width);
     for (i = 0; i <= segs; i++)
     {
         if (i == 0)
@@ -193,8 +243,8 @@ static void lightningDrawStrand(f32* from, f32* to, u8 width, f32 segScale, int*
             a2 = from[2];
             a1 = from[1];
             a0 = from[0];
-            GXPosition3f32(a0, a1, a2);
-            GXTexCoord2f32(0.0f, 0.0f);
+            fh_pica_lightning_point(a0, a1, a2);
+
             px = from[0];
             py = from[1];
             pz = from[2];
@@ -208,12 +258,7 @@ static void lightningDrawStrand(f32* from, f32* to, u8 width, f32 segScale, int*
             )
             )
             ;
-            PSMTXRotAxisRad(
-                (MtxPtr)mtx, (Vec*)scaled,
-                3.142f *
-                (2.0f * (0.001f * randomGetRange(0, 1000))
-            )
-            )
+            fh_lightning_rot_phase((MtxPtr)mtx, (Vec*)scaled, randomGetRange(0, 1000))
             ;
             PSMTXMultVecSR((MtxPtr)mtx, (Vec*)offset, (Vec*)offset);
             px += scaled[0] * (step = weight * (len * (segs - i)));
@@ -225,8 +270,8 @@ static void lightningDrawStrand(f32* from, f32* to, u8 width, f32 segScale, int*
             e1 += offset[1];
             e0 = px;
             e0 += offset[0];
-            GXPosition3f32(e0, e1, e2);
-            GXTexCoord2f32(0.0f, 0.0f);
+            fh_pica_lightning_point(e0, e1, e2);
+
         }
         else
         {
@@ -234,8 +279,8 @@ static void lightningDrawStrand(f32* from, f32* to, u8 width, f32 segScale, int*
             b2 = to[2];
             b1 = to[1];
             b0 = to[0];
-            GXPosition3f32(b0, b1, b2);
-            GXTexCoord2f32(0.0f, 0.0f);
+            fh_pica_lightning_point(b0, b1, b2);
+
         }
     }
     if (getHudHiddenFrameCount() == 0)
@@ -333,12 +378,7 @@ static void lightningDrawBolt(f32* start, f32* end, u8 width, f32 segScale, f32 
             )
             )
             ;
-            PSMTXRotAxisRad(
-                (MtxPtr)mtx, (Vec*)scaled,
-                3.142f *
-                (2.0f * (0.001f * randomGetRange(0, 1000))
-            )
-            )
+            fh_lightning_rot_phase((MtxPtr)mtx, (Vec*)scaled, randomGetRange(0, 1000))
             ;
             PSMTXMultVecSR((MtxPtr)mtx, (Vec*)offset, (Vec*)offset);
             progress += weight * (segs - i);
@@ -356,12 +396,7 @@ static void lightningDrawBolt(f32* start, f32* end, u8 width, f32 segScale, f32 
                 )
                 )
                 ;
-                PSMTXRotAxisRad((MtxPtr)mtx, (Vec*)scaled,
-                                3.142f *
-                                (2.0f *
-                                    (0.001f * randomGetRange(0, 1000))
-                )
-                )
+                fh_lightning_rot_phase((MtxPtr)mtx, (Vec*)scaled, randomGetRange(0, 1000))
                 ;
                 PSMTXMultVecSR((MtxPtr)mtx, (Vec*)offset, (Vec*)offset);
                 bfrac = 0.001f * ((1.0f - progress) *
@@ -420,21 +455,12 @@ void lightningRender(LightningEffect* p)
         _gxSetTevColor2(0x80, 0x80, 0xff,
                         (int)((255.0f * (lifetime - timer)) / half));
     }
-    GXSetCullMode(GX_CULL_NONE);
     Camera_RebuildProjectionMatrix();
-    GXClearVtxDesc();
-    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
-    GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
-    gxTevResetStages();
-    gxTevColor1TexAlphaStage();
-    gxTevCommitStages();
-    gxSetAdditiveBlendZTest();
-    getNewShadowLightningTexture(&tex);
-    selectTexture(tex, 0);
-    GXSetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, color);
     Camera_UpdateViewMatrices();
-    GXLoadPosMtxImm((MtxPtr)Camera_GetViewMatrix(), GX_PNMTX0);
-    GXSetCurrentMtx(GX_PNMTX0);
+    getNewShadowLightningTexture(&tex);
+    unsigned nativeClip[4];GXGetScissor(nativeClip,nativeClip+1,nativeClip+2,nativeClip+3);
+    fh_pica_lightning_begin((const float(*)[4])Camera_GetViewMatrix(),
+        (const float(*)[4])Camera_GetProjectionMatrix(),fh_pica_hud_page(tex),fh_minimal_text_color,nativeClip);
     savedSeed = sfaRand();
     if (p->seed == 0xffff)
     {
@@ -446,6 +472,7 @@ void lightningRender(LightningEffect* p)
     lightningDrawBolt(start, end, p->width, p->radiusX, p->radiusY, &savedSeed, 0,
                       p->flags);
     sfaSrand(savedSeed);
+    fh_pica_lightning_end();
 }
 
 static inline float sqrtf__inline(float x)
@@ -770,8 +797,9 @@ int snowPrintSnowCloud(void* arg, int cloudId)
             break;
         }
     }
+    if(i==8)return 0;
     p = gNewClouds[i];
-    if (p == NULL || i == 8)
+    if (p == NULL)
     {
         return 0;
     }
@@ -785,6 +813,10 @@ int snowPrintSnowCloud(void* arg, int cloudId)
     {
         gNewCloudFlashRotAngle = 0;
     }
+    const unsigned nativeDraw=(fh_graphics_options&FH_GRAPHICS_WEATHER) && !(fh_graphics_options&FH_GRAPHICS_NO_RENDER);
+    if(p->cloudType==4 && !(p->flags144A&NEWCLOUD_CMD_ROTFIXED) && p->spinEnabled)
+        gNewCloudFlashRotAngle=6000.0f*(p->driftOffset/10.0f)+3000.0f;
+    if(nativeDraw){
     scale *= 0.125f;
     initRotationMtx(mtxA, scale, scale, scale);
     memset(mtxB, 0, 0x40);
@@ -811,8 +843,7 @@ int snowPrintSnowCloud(void* arg, int cloudId)
         }
         else if (p->spinEnabled != 0)
         {
-            gNewCloudFlashRotAngle =
-                6000.0f * (p->driftOffset / 10.0f) + 3000.0f;
+
             mtxB[0] = mathCosf((3.14159265f *  - gNewCloudFlashRotAngle) / 32768.0f);
             mtxB[1] = -mathSinf((3.14159265f *  - gNewCloudFlashRotAngle) / 32768.0f);
             mtxB[4] = mathSinf((3.14159265f *  - gNewCloudFlashRotAngle) / 32768.0f);
@@ -825,32 +856,20 @@ int snowPrintSnowCloud(void* arg, int cloudId)
     mtx44_mult(mtxA, mtxB, mtxOut);
     mtx44Transpose(mtxOut, mtxT);
     PSMTXConcat((MtxPtr)Camera_GetViewMatrix(), (MtxPtr)mtxT, (MtxPtr)mtxT);
-    GXLoadPosMtxImm((MtxPtr)mtxT, GX_PNMTX0);
-    texIdx = 0;
-    selectTexture((Texture*)(p->cloudType == 0 ? gNewCloudLayerTextures[0] : gNewCloudType1Texture), 0);
-    GXSetCullMode(GX_CULL_NONE);
-    gxTevResetStages();
-    gxTevTextureTimesColor1Stage();
-    gxTevCommitStages();
-    if (p->cloudType == 4)
-    {
-        setTextColor(arg, 0x7d, 0x7d, 0x9b, 0xff);
+
+    } /* Hidden weather has no view/rotation matrix work. */
+    unsigned nativeClip[4];
+    if(nativeDraw)GXGetScissor(nativeClip,nativeClip+1,nativeClip+2,nativeClip+3);
+    texIdx=0;
+    Texture *nativeTexture=p->cloudType==0?gNewCloudLayerTextures[0]:gNewCloudType1Texture;
+    unsigned nativePage=nativeDraw?fh_pica_hud_find(nativeTexture):0;
+    if(p->cloudType==4)setTextColor(arg,0x7d,0x7d,0x9b,0xff);
+    else if(p->cloudType==0){
+        skyGetSunColor(0,&attr.cr,&attr.cg,&attr.cb);
+        setTextColor(arg,attr.cr,attr.cg,attr.cb,0xff);
     }
-    else if (p->cloudType == 0)
-    {
-        skyGetSunColor(0, &attr.cr, &attr.cg, &attr.cb);
-        setTextColor(arg, attr.cr, attr.cg, attr.cb, 0xff);
-    }
-    gxSetAlphaBlendZTest();
-    GXClearVtxDesc();
-    GXSetVtxDesc(GX_VA_PNMTXIDX, GX_DIRECT);
-    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
-    GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
-    GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
-    GXSetCurrentMtx(GX_PNMTX0);
-    GXClearVtxDesc();
-    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
-    GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+    if(nativeDraw)fh_pica_weather_begin((const float(*)[4])mtxT,(const float(*)[4])Camera_GetProjectionMatrix(),
+        p->quads,sizeof(p->quads[0]),attr.uvs.uv,fh_minimal_text_color,nativeClip);
     hudHidden = getHudHiddenFrameCount();
     driftX = SNOW_FLAKE_SIZE * (p->curPosX - p->lastPosX);
     stepX = (driftX < 0.5f * p->flakeMinX)
@@ -864,21 +883,12 @@ int snowPrintSnowCloud(void* arg, int cloudId)
                 : ((driftZ > 0.5f * p->flakeMaxZ)
                        ? 0.5f * p->flakeMaxZ
                        : driftZ);
-    if (p->cloudType == 4)
-    {
-        GXBegin(GX_TRIANGLES, GX_VTXFMT4, (p->flakeCount * 3));
-    }
-    else
-    {
-        GXBegin(GX_TRIANGLES, GX_VTXFMT4, (p->flakeCount * 3 / 4));
-    }
     for (j = 0, part = p->flakes; j < p->flakeCount; j++)
     {
-        if (part->texLayer != (u8)texIdx)
-        {
-            texIdx = part->texLayer;
-            selectTexture(gNewCloudLayerTextures[texIdx], 0);
-            GXBegin(GX_TRIANGLES, GX_VTXFMT4, (p->flakeCount * 3 / 4));
+        if(nativeDraw && part->texLayer!=(u8)texIdx){
+            texIdx=part->texLayer;
+            if((unsigned)texIdx>=4)fh_platform_panic("PICA weather source layer");
+            nativePage=fh_pica_hud_find(gNewCloudLayerTextures[texIdx]);
         }
         if (hudHidden == 0)
         {
@@ -908,42 +918,13 @@ int snowPrintSnowCloud(void* arg, int cloudId)
                     part->z - 2.0f * p->flakeMaxZ;
             }
         }
-        yb = part->y - ((f32*)p->unk0008)[part->angle];
-        quadOffsetX = p->quads[part->quadIndex].verts[0];
-        vx[0] = quadOffsetX * part->fallSpeed + part->x;
-        quadOffsetY = p->quads[part->quadIndex].verts[3];
-        vy[0] = quadOffsetY * part->fallSpeed + yb;
-        quadOffsetZ = p->quads[part->quadIndex].verts[6];
-        vz[0] = quadOffsetZ * part->fallSpeed + part->z;
-        quadOffsetX = p->quads[part->quadIndex].verts[1];
-        vx[1] = quadOffsetX * part->fallSpeed + part->x;
-        quadOffsetY = p->quads[part->quadIndex].verts[4];
-        vy[1] = quadOffsetY * part->fallSpeed + yb;
-        quadOffsetZ = p->quads[part->quadIndex].verts[7];
-        vz[1] = quadOffsetZ * part->fallSpeed + part->z;
-        quadOffsetX = p->quads[part->quadIndex].verts[2];
-        vx[2] = quadOffsetX * part->fallSpeed + part->x;
-        quadOffsetY = p->quads[part->quadIndex].verts[5];
-        vy[2] = quadOffsetY * part->fallSpeed + yb;
-        quadOffsetZ = p->quads[part->quadIndex].verts[8];
-        vz[2] = quadOffsetZ * part->fallSpeed + part->z;
-        puv = attr.uvs.uv;
-        GXPosition3f32((f64)qx[0], (f64)qy[0], (f64)qz[0]);
-        ut = puv[1];
-        us = puv[0];
-        snowFifoTexCoord2s16(us, ut);
-        puv += 2;
-        GXPosition3f32((f64)qx[1], (f64)qy[1], (f64)qz[1]);
-        ut = puv[1];
-        us = puv[0];
-        snowFifoTexCoord2s16(us, ut);
-        puv += 2;
-        GXPosition3f32((f64)qx[2], (f64)qy[2], (f64)qz[2]);
-        ut = puv[1];
-        us = puv[0];
-        snowFifoTexCoord2s16(us, ut);
-        part += 1;
+        if(nativeDraw){
+        yb=part->y-((f32*)p->unk0008)[part->angle];
+        fh_pica_weather_particle(nativePage,part->x,yb,part->z,part->fallSpeed,part->quadIndex);
+        }
+        part+=1;
     }
+    if(nativeDraw)fh_pica_weather_end();
     return 0;
 }
 
@@ -966,6 +947,16 @@ void snowCloudUpdateFlakes(u8* snow)
     f32 c3;
     f32 s3;
 
+
+    if(!(fh_graphics_options&FH_GRAPHICS_WEATHER) || (fh_graphics_options&FH_GRAPHICS_NO_RENDER)){
+        NewCloud *cloud=(NewCloud*)snow;
+        if(cloud->cloudType==0)for(unsigned q=0;q<20;q++){
+            SnowQuad *quad=cloud->quads+q;
+            quad->angA=timeDelta*(f32)quad->angVelA+(f32)quad->angA;
+            quad->angB=timeDelta*(f32)quad->angVelB+(f32)quad->angB;
+        }
+        return;
+    }
     cam = Camera_GetCurrent();
     e = ((NewCloud*)snow)->quads;
     if (((NewCloud*)snow)->cloudType == 0)
@@ -1586,6 +1577,10 @@ void newclouds_run(void)
         clouds[2] = textureLoadAsset(0x640);
         clouds[3] = textureLoadAsset(0x641);
         gNewCloudType1Texture = textureLoadAsset(0x151);
+        fh_pica_weather_load();
+        for(unsigned nativeLayer=0;nativeLayer<4;nativeLayer++)
+            fh_pica_game_hud_loaded(clouds[nativeLayer]);
+        fh_pica_game_hud_loaded(gNewCloudType1Texture);
         gNewCloudInitialized = 1;
     }
     if (renderModeSetOrGet(-1) == 1)

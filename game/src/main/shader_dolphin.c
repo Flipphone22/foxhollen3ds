@@ -308,6 +308,8 @@ void addWarpedNoiseTevStages(void* p1, void* mtx)
     m = sWarpedNoiseIndMtx;
     if (sWarpNoiseTexture == 0)
     {
+        extern void fh_gx_dispatch_barrier(void);
+        fh_gx_dispatch_barrier();
         sWarpNoiseTexture = textureAlloc(0x20, 0x20, 4, 0, 0, 1, 1, 1, 1);
         for (y = 0; y < 0x20; y++)
         {

@@ -1,3 +1,4 @@
+#include "fh_input_tape.h"
 /*
  * dll_3e - THP attract-mode movie playback (FRONT/attract_movie).
  *
@@ -58,7 +59,7 @@ static u32 sPcMovieTexture;
 static OSTime sPcMovieNextFrameTime;
 static OSTime sPcMovieFrameTicks;
 
-static BOOL DecodeNextMovieFramePC(void) {
+static BOOL DecodeNextMovieFramePC(BOOL video) {
     AttractMoviePlayer* player = &gAttractMoviePlayer;
     AttractMovieReadBuffer* readBuffer = &player->readBuffer[0];
     AttractMovieTextureSet* textureSet = &player->textureSet[sPcMovieTexture];
@@ -72,11 +73,24 @@ static BOOL DecodeNextMovieFramePC(void) {
         return FALSE;
     }
 
+    /* The completed current frame is now in readBuffer, separate from the
+     * worker's private buffer. Overlap its next read with video/audio decode.
+     * Do not advance source frame state until its original publication below. */
+    {
+        u32 nextOffset = sPcMovieReadOffset + sPcMovieReadSize;
+        u32 nextSize = fhSwap32(*(u32*)readBuffer->ptr);
+        if (sPcMovieFrame + 1 >= player->header.mNumFrames) {
+            nextOffset = player->header.mMovieDataOffsets;
+            nextSize = player->header.mFirstFrameSize;
+        }
+        extern void fh_dvd_movie_prefetch(DVDFileInfo*,unsigned,unsigned);
+        fh_dvd_movie_prefetch(&player->fileInfo,nextSize,nextOffset);
+    }
     componentSizes = (u32*)(readBuffer->ptr + 8);
     componentData = readBuffer->ptr + 8 + player->compInfo.mNumComponents * sizeof(u32);
     for (i = 0; i < player->compInfo.mNumComponents; i++) {
         u32 componentSize = fhSwap32(componentSizes[i]);
-        if (player->compInfo.mFrameComp[i] == 0) {
+        if (player->compInfo.mFrameComp[i] == 0 && video) {
             s32 decodeError;
             fhTHPVideoSetCompressedSize(componentSize);
             decodeError = THPVideoDecode(componentData, textureSet->yTexture, textureSet->uTexture,
@@ -142,10 +156,13 @@ static void PlayControl(u32 retraceCount) {
         gAttractMoviePlayer.internalState = 2;
         return;
     }
-    now = OSGetTime();
-    if (now >= sPcMovieNextFrameTime) {
-        DecodeNextMovieFramePC();
-        sPcMovieNextFrameTime += sPcMovieFrameTicks;
+    now = fh_input_movie_time(1, OSGetTime());
+    {
+        int caught;
+        for (caught = 0; caught < 4 && now >= sPcMovieNextFrameTime; caught++) {
+            DecodeNextMovieFramePC(now < sPcMovieNextFrameTime + sPcMovieFrameTicks);
+            sPcMovieNextFrameTime += sPcMovieFrameTicks;
+        }
         if (now - sPcMovieNextFrameTime >= sPcMovieFrameTicks) {
             sPcMovieNextFrameTime = now + sPcMovieFrameTicks;
         }
@@ -334,7 +351,7 @@ BOOL prepareAttractMode(u32 movieIndex, s32 playFlags) {
         sPcMovieFrame = player->initReadFrame;
         sPcMovieTexture = 0;
         sPcMovieFrameTicks = (OSTime)((f64)OS_TIMER_CLOCK / player->header.mFrameRate);
-        sPcMovieNextFrameTime = OSGetTime() + sPcMovieFrameTicks;
+        sPcMovieNextFrameTime = fh_input_movie_time(2, OSGetTime()) + sPcMovieFrameTicks;
         player->curVideoFrameNumber = 0;
         player->curAudioFrameNumber = 0;
         player->curTextureSet = NULL;
@@ -342,7 +359,7 @@ BOOL prepareAttractMode(u32 movieIndex, s32 playFlags) {
         if (player->audioExists != 0) {
             AttractMovieAudio_InitQueuesPC();
         }
-        if (!DecodeNextMovieFramePC()) {
+        if (!DecodeNextMovieFramePC(TRUE)) {
             return FALSE;
         }
         player->state = 1;

@@ -34,6 +34,10 @@ static void DLcreate(_SND_REVSTD_DELAYLINE *dl, s32 len) {
 
 static void DLdelete(_SND_REVSTD_DELAYLINE *dl) { salFree(dl->inputs); }
 
+
+extern void fh_audio_game_effect_created(const void *,float,float,float,float,float);
+extern void fh_audio_game_effect_destroyed(const void *);
+
 bool ReverbSTDCreate(_SND_REVSTD_WORK *rv, float coloration, float time, float mix, float damping,
                      float predelay) {
   static u32 lens[4] = {1789, 1999, 433, 149};
@@ -84,6 +88,7 @@ bool ReverbSTDCreate(_SND_REVSTD_WORK *rv, float coloration, float time, float m
     }
   }
 
+  fh_audio_game_effect_created(rv,coloration,time,mix,damping,predelay);
   return TRUE;
 }
 
@@ -97,6 +102,7 @@ bool ReverbSTDModify(_SND_REVSTD_WORK *rv, float coloration, float time, float m
     return FALSE;
   }
 
+  fh_audio_game_effect_destroyed(rv);
   rv->allPassCoeff = coloration;
   rv->level = mix;
   rv->damping = damping;
@@ -417,90 +423,84 @@ lbl_803B599C:
 }
 /* clang-format on */
 #else
-static f32 DLreadSample(_SND_REVSTD_DELAYLINE *dl) {
-  f32 sample = dl->inputs[dl->outPoint / (s32)sizeof(f32)];
-  dl->outPoint += sizeof(f32);
-  if (dl->outPoint >= dl->length) {
-    dl->outPoint = 0;
-  }
-  dl->lastOutput = sample;
-  return sample;
-}
 
-static void DLwriteSample(_SND_REVSTD_DELAYLINE *dl, f32 sample) {
-  dl->inputs[dl->inPoint / (s32)sizeof(f32)] = sample;
-  dl->inPoint += sizeof(f32);
-  if (dl->inPoint >= dl->length) {
-    dl->inPoint = 0;
-  }
-}
 
-static f32 HandlePreDelay(_SND_REVSTD_WORK *rv, s32 channel, f32 sample) {
-  f32 *ptr;
-  f32 *end;
-  f32 delayed;
 
-  if (rv->preDelayTime == 0) {
-    return sample;
-  }
 
-  ptr = rv->preDelayPtr[channel];
-  delayed = *ptr;
-  *ptr = sample;
-  ++ptr;
-  end = rv->preDelayLine[channel] + rv->preDelayTime;
-  if (ptr >= end) {
-    ptr = rv->preDelayLine[channel];
-  }
-  rv->preDelayPtr[channel] = ptr;
-  return delayed;
-}
+
 
 static void HandleReverbChannel(s32 *sptr, _SND_REVSTD_WORK *rv, s32 k) {
-  f32 dampWet = rv->level * 0.6f;
-  f32 dampDry = 0.6f - dampWet;
-  _SND_REVSTD_DELAYLINE *comb0 = &rv->C[k * 2];
-  _SND_REVSTD_DELAYLINE *comb1 = &rv->C[k * 2 + 1];
-  _SND_REVSTD_DELAYLINE *allpass0 = &rv->AP[k * 2];
-  _SND_REVSTD_DELAYLINE *allpass1 = &rv->AP[k * 2 + 1];
-  s32 i;
-
-  for (i = 0; i < 160; ++i) {
-    f32 sample = (f32)sptr[i];
-    f32 delayed = HandlePreDelay(rv, k, sample);
-    f32 comb0Last;
-    f32 comb1Last;
-    f32 allpass0Last;
-    f32 allpass1Last;
-    f32 combSum;
-    f32 allpass0Input;
-    f32 allpass1Input;
-    f32 lowPass;
-    f32 allPass;
-
-    DLwriteSample(comb0, rv->combCoef[k * 2] * comb0->lastOutput + delayed);
-    DLwriteSample(comb1, rv->combCoef[k * 2 + 1] * comb1->lastOutput + delayed);
-    comb0Last = DLreadSample(comb0);
-    comb1Last = DLreadSample(comb1);
-    combSum = comb0Last + comb1Last;
-
-    allpass0Last = allpass0->lastOutput;
-    allpass0Input = rv->allPassCoeff * allpass0Last + combSum;
-    DLwriteSample(allpass0, allpass0Input);
-    lowPass = allpass0Last - rv->allPassCoeff * allpass0Input;
-    DLreadSample(allpass0);
-
-    lowPass *= 0.3f;
-    rv->lpLastout[k] = rv->damping * rv->lpLastout[k] + lowPass;
-
-    allpass1Last = allpass1->lastOutput;
-    allpass1Input = rv->allPassCoeff * allpass1Last + rv->lpLastout[k];
-    DLwriteSample(allpass1, allpass1Input);
-    allPass = allpass1Last - rv->allPassCoeff * allpass1Input;
-    DLreadSample(allpass1);
-
-    sptr[i] = (s32)(dampDry * sample + dampWet * allPass);
+  unsigned frames = 160;
+  if (!frames) return;
+  _SND_REVSTD_DELAYLINE *rings[4] = {&rv->C[k*2], &rv->C[k*2+1], &rv->AP[k*2], &rv->AP[k*2+1]};
+  const f32 wet = rv->level * 0.6f, dry = 0.6f - wet;
+  const f32 coef0 = rv->combCoef[k*2], coef1 = rv->combCoef[k*2+1];
+  const f32 pass = rv->allPassCoeff, damping = rv->damping;
+  f32 c0last = rings[0]->lastOutput, c1last = rings[1]->lastOutput;
+  f32 a0last = rings[2]->lastOutput, a1last = rings[3]->lastOutput;
+  f32 low = rv->lpLastout[k];
+  while (frames) {
+    unsigned count = frames;
+    for (unsigned j=0;j<4;j++) {
+      unsigned in = (unsigned)(rings[j]->length-rings[j]->inPoint)/sizeof(f32);
+      unsigned out = (unsigned)(rings[j]->length-rings[j]->outPoint)/sizeof(f32);
+      if (in<count) count=in;
+      if (out<count) count=out;
+    }
+    f32 *pre = rv->preDelayPtr[k];
+    if (rv->preDelayTime>=32) {
+      unsigned left = (unsigned)(rv->preDelayLine[k]+rv->preDelayTime-pre);
+      if (left<count) count=left;
+    }
+    /* Constructor-owned arrays are disjoint; each ring's read and write
+     * pointers may overlap, so restrict is deliberately NOT used here. */
+    f32 *cw0=rings[0]->inputs+rings[0]->inPoint/sizeof(f32);
+    f32 *cr0=rings[0]->inputs+rings[0]->outPoint/sizeof(f32);
+    f32 *cw1=rings[1]->inputs+rings[1]->inPoint/sizeof(f32);
+    f32 *cr1=rings[1]->inputs+rings[1]->outPoint/sizeof(f32);
+    f32 *aw0=rings[2]->inputs+rings[2]->inPoint/sizeof(f32);
+    f32 *ar0=rings[2]->inputs+rings[2]->outPoint/sizeof(f32);
+    f32 *aw1=rings[3]->inputs+rings[3]->inPoint/sizeof(f32);
+    f32 *ar1=rings[3]->inputs+rings[3]->outPoint/sizeof(f32);
+    for (unsigned i=0;i<count;i++) {
+      f32 sample=(f32)sptr[i], delayed=sample;
+      if (rv->preDelayTime) {
+        delayed=*pre;*pre++=sample;
+        /* Tiny legal delays must not turn every sample into a new span. */
+        if (rv->preDelayTime<32 && pre==rv->preDelayLine[k]+rv->preDelayTime)
+          pre=rv->preDelayLine[k];
+      }
+      cw0[i]=coef0*c0last+delayed;
+      cw1[i]=coef1*c1last+delayed;
+      c0last=cr0[i];c1last=cr1[i];
+      f32 sum=c0last+c1last;
+      f32 a0input=pass*a0last+sum;
+      aw0[i]=a0input;
+      f32 lp=a0last-pass*a0input;
+      a0last=ar0[i];
+      lp*=0.3f;
+      low=damping*low+lp;
+      f32 a1input=pass*a1last+low;
+      aw1[i]=a1input;
+      f32 output=a1last-pass*a1input;
+      a1last=ar1[i];
+      sptr[i]=(s32)(dry*sample+wet*output);
+    }
+    for (unsigned j=0;j<4;j++) {
+      rings[j]->inPoint+=(s32)(count*sizeof(f32));
+      rings[j]->outPoint+=(s32)(count*sizeof(f32));
+      if (rings[j]->inPoint==rings[j]->length) rings[j]->inPoint=0;
+      if (rings[j]->outPoint==rings[j]->length) rings[j]->outPoint=0;
+    }
+    if (rv->preDelayTime) {
+      if (pre==rv->preDelayLine[k]+rv->preDelayTime) pre=rv->preDelayLine[k];
+      rv->preDelayPtr[k]=pre;
+    }
+    sptr+=count;frames-=count;
   }
+  rings[0]->lastOutput=c0last;rings[1]->lastOutput=c1last;
+  rings[2]->lastOutput=a0last;rings[3]->lastOutput=a1last;
+  rv->lpLastout[k]=low;
 }
 
 static void HandleReverb(s32 *sptr, _SND_REVSTD_WORK *rv) {
@@ -526,6 +526,7 @@ void ReverbSTDCallback(s32 *left, s32 *right, s32 *surround, _SND_REVSTD_WORK *r
 }
 
 void ReverbSTDFree(_SND_REVSTD_WORK *rv) {
+  fh_audio_game_effect_destroyed(rv);
   u8 i; // r31
   for (i = 0; i < 6; ++i) {
     DLdelete(&rv->AP[i]);

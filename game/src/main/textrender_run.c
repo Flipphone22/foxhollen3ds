@@ -1,3 +1,7 @@
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
 #include "types.h"
 #include "track/intersect_hud.h"
 #include "track/intersect_render_setup.h"
@@ -805,6 +809,15 @@ void gameTextLoadForCurMap(int sourceId)
     testAndSet_onlyUseHeap3(oldHeap);
 }
 
+
+#include "fh_minimal_graphics.h"
+static void fh_pica_font_loaded(Texture* texture){
+    if(!fh_pica_scene_actors || !texture)return;
+    FhTexture source;
+    if(!fh_gx_texture_view(textureGetGXTexObj(texture),&source))fh_platform_panic("PICA font texture descriptor");
+    fh_pica_hud_load(texture,&source);
+}
+
 void gameTextBuildSystemFontAtlas(void)
 {
     int wbytes;
@@ -975,6 +988,7 @@ void gameTextBuildSystemFontAtlas(void)
         glyph++;
     }
     DCFlushRange((u8*)charset->textures[0] + sizeof(Texture), 0x20000);
+    fh_pica_font_loaded(charset->textures[0]);
     mm_free(bufA);
     mm_free(bufB);
     mm_free(buf);
@@ -1159,6 +1173,7 @@ void gameTextFinalizeLoad(GameTextLoadSlot* loadSlot)
         if (textureSlot[0] != NULL)
         {
             mmSetFreeDelay(0);
+            fh_pica_hud_release(textureSlot[0]);
             mm_free(textureSlot[0]);
             mmSetFreeDelay(2);
         }
@@ -1192,6 +1207,7 @@ void gameTextFinalizeLoad(GameTextLoadSlot* loadSlot)
             u32 area = w * h;
             p += (int)(area * bpp) >> 4;
         }
+        fh_pica_font_loaded(textureSlot[0]);
         textureSlot = textureSlot + 1;
     }
     size = (u32)((u8*)texStart - (u8*)loadSlot->loadHandle);

@@ -1,3 +1,27 @@
+#include "fh_pica_fur.h"
+#include "fh_pica_hud.h"
+#include "fh_graphics_options.h"
+#include "fh_pica_color_fade.h"
+#include "fh_pica_morph.h"
+extern unsigned char lbl_803DB5E8;
+#include "fh_pica_actor_fog_dispatch.h"
+#include "fh_native_actor_fog_owner.h"
+#include "fh_pica_model.h"
+#include "fh_pica_cloud.h"
+#include "fh_pica_movie.h"
+#include "fh_pica_hologram.h"
+#include "fh_pica_ui_model.h"
+#include "fh_platform.h"
+#include "main/rcp_dolphin_render.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
+#include "fh_surface_detail.h"
+#include "fh_scene_game.h"
+#include "fh_native_model_draw.h"
+extern int fh_model_geometry_callback_safe(const void*);
+#include "fh_fur_detail.h"
+#include "fh_model_resources.h"
 #include "game/objects/object.h"
 #include "main/texture.h"
 #include "main/model_light.h"
@@ -478,6 +502,59 @@ int objFuzzRenderCb(GameObject* obj, ObjModel* model, int ropIdx) {
     mtxA = sObjFuzzIndMtxA;
     mtxB = sObjFuzzIndMtxB;
     rop = ObjModel_GetRenderOp(model->file, ropIdx);
+    ModelRenderOpTextureRefs* fh_refs = ObjModel_GetRenderOpTextureRefs(model, ropIdx);
+    int fh_uv = fh_surface_uv_base(model->file->jointCount, model->file->texMtxCount,
+        fh_refs->texture0 != NULL || fh_refs->texture1 != NULL, rop->auxTexture != NULL, 2);
+    /* Live base/noise/mask samplers replace the normal-map light texture and
+     * indirect coordinate stages. Original shell poses/order remain. */
+    if (fh_surface_detail && fh_uv >= 0 && !gObjSelectedLightCount && !lbl_803DCC36 &&
+        !(obj->colorFadeFlags & (OBJ_COLOR_FADE_FLAG_ACTIVE | OBJ_COLOR_FADE_FLAG_OVERRIDE)) &&
+        (rop->flags & 0x200) && rop->layerCount == 1 &&
+        !rop->layers[0].materialId && !rop->layers[0].scrollMtx) {
+        getNewShadowNoiseTextureFrames(&noiseTextures, &noiseFrameCount);
+        if (gObjFuzzLayerIndex >= 0 && gObjFuzzLayerIndex < noiseFrameCount) {
+            gObjFuzzPassActive = 1;
+            selectTexture(textureIdxToPtr((uintptr_t)rop->layers[0].texture), 0);
+            selectTexture(noiseTextures[gObjFuzzLayerIndex], 1);
+            GXSetTexCoordGen2(fh_uv, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_FALSE, GX_PTIDENTITY);
+            PSMTXScale(mtx4, 37.5f, 37.5f, 1.0f);
+            GXLoadTexMtxImm(mtx4, GX_PTTEXMTX0, GX_MTX3x4);
+            GXSetTexCoordGen2(fh_uv+1, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_FALSE, GX_PTTEXMTX0);
+            unsigned n = rop->indTexture ? 4 : 3;
+            for (unsigned j = 0; j < n; j++) {
+                GXSetTevDirect(j);GXSetTevSwapMode(j, GX_TEV_SWAP0, GX_TEV_SWAP0);
+                GXSetTevColorOp(j, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+                GXSetTevAlphaOp(j, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+            }
+            GXSetTevOrder(0, fh_uv, GX_TEXMAP0, GX_COLOR0A0);
+            GXSetTevColorIn(0, GX_CC_ZERO, GX_CC_TEXC, GX_CC_RASC, GX_CC_ZERO);
+            GXSetTevAlphaIn(0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO);
+            GXSetTevOrder(1, fh_uv+1, GX_TEXMAP1, GX_COLOR_NULL);
+            GXSetTevColorIn(1, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_CPREV);
+            GXSetTevAlphaIn(1, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
+            if (rop->indTexture) {
+                selectTexture(textureIdxToPtr((uintptr_t)rop->indTexture), 2);
+                /* GX indirect S uses alpha. Sampling it directly deliberately
+                 * replaces five-bit bump quantization with continuous opacity. */
+                GXSetTevOrder(2, fh_uv, GX_TEXMAP2, GX_COLOR_NULL);
+                GXSetTevColorIn(2, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_CPREV);
+                GXSetTevAlphaIn(2, GX_CA_ZERO, GX_CA_TEXA, GX_CA_APREV, GX_CA_ZERO);
+            }
+            GXColorS10 fade = {0,0,0,(s16)obj->anim.renderAlpha - 255};
+            GXSetTevColorS10(GX_TEVREG0, fade);
+            GXSetTevOrder(n-1, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR_NULL);
+            GXSetTevColorIn(n-1, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_CPREV);
+            GXSetTevAlphaIn(n-1, GX_CA_APREV, GX_CA_ZERO, GX_CA_ZERO, GX_CA_A0);
+            GXSetNumTevStages(n);GXSetNumTexGens(fh_uv+2);GXSetNumIndStages(0);
+            GXSetCullMode(GX_CULL_BACK);
+            if (model->file->flags & 0x100) GXSetFog(GX_FOG_NONE,0,0,0,0,*(GXColor*)&lbl_803DB468);
+            else _gxSetFogParams();
+            gxSetZMode_(1,GX_LEQUAL,0);gxSetPeControl_ZCompLoc_(1);
+            GXSetBlendMode(GX_BM_BLEND,GX_BL_SRCALPHA,GX_BL_INVSRCALPHA,GX_LO_NOOP);
+            fh_surface_detail_fur++;return 1;
+        }
+    }
+
     if ((rop->flags & 0x200) == 0) {
         gObjFuzzPassActive = 0;
         return 0;
@@ -1032,8 +1109,16 @@ static void modelLoadMtxsToGx(ModelFileHeader* hdr, int* model, MtxBitStream* bs
     }
 }
 
+#include "fh_gx_matrix_block.h"
+#include "fh_render_floor.h"
 static void renderOpMatrix(ModelFileHeader* hdr, int* model, MtxBitStream* bs, f32* m1, f32* mtx, u8 nrm, u8 tex,
                            u8 skip) {
+    if (fh_render_floor) {
+        bs->pos = fh_render_floor_matrix_end(bs->data, bs->pos);
+        ++fh_render_floor_matrix_ops;
+        return;
+    }
+
     u8* posMtxIds[1];
     char* cache;
     posMtxIds[0] = gObjGxPosMtxIdTable;
@@ -1079,6 +1164,8 @@ static void renderOpMatrix(ModelFileHeader* hdr, int* model, MtxBitStream* bs, f
         }
         i = 0;
         texMtxIds = posMtxIds[0] + 0xc;
+        unsigned fh_flags = skip ? 0 : (!!nrm | (!!tex << 1));
+        uint32_t* fh_packet = fh_gx_matrix_block_begin((unsigned)count, fh_flags);
         for (; i < count; i++) {
             int idx;
             {
@@ -1091,28 +1178,34 @@ static void renderOpMatrix(ModelFileHeader* hdr, int* model, MtxBitStream* bs, f
                 bs->pos = pos + 8;
                 idx = (w >> (pos & 7)) & 0xff;
             }
+            uint32_t* fh_row = fh_gx_matrix_block_row(fh_packet, (unsigned)i);
             if (gModelMtxCacheState == 2) {
                 u8* posMtx = (u8*)(cache + idx * 0x30);
                 u8* normalMtx = posMtx + 0x12c0;
-                GXLoadPosMtxImm((const f32(*)[4])posMtx, *posMtxIds[0]);
-                if (skip == 0 && tex != 0) {
+                if (fh_row) {
+                    fh_gx_matrix_block_position(fh_row, posMtx, *posMtxIds[0], (fh_flags & 2) ? *texMtxIds : 0);
+                    if (fh_flags) fh_gx_matrix_block_normal(fh_row, normalMtx);
+                } else GXLoadPosMtxImm((const f32(*)[4])posMtx, *posMtxIds[0]);
+                if (!fh_row && skip == 0 && tex != 0) {
                     GXLoadTexMtxImm((const f32(*)[4])normalMtx, *texMtxIds, GX_MTX3x4);
                 }
-                if (skip == 0 && nrm != 0) {
+                if (!fh_row && skip == 0 && nrm != 0) {
                     GXLoadNrmMtxImm((const f32(*)[4])normalMtx, *posMtxIds[0]);
                 }
             } else {
                 PSMTXConcat((MtxPtr)mtx, (MtxPtr)(f32*)ObjModel_GetJointMatrix((u8*)model, idx), (MtxPtr)tmp);
-                GXLoadPosMtxImm((const f32(*)[4])tmp, *posMtxIds[0]);
+                if (fh_row) fh_gx_matrix_block_position(fh_row, tmp, *posMtxIds[0], (fh_flags & 2) ? *texMtxIds : 0);
+                else GXLoadPosMtxImm((const f32(*)[4])tmp, *posMtxIds[0]);
                 if (skip == 0 && (nrm != 0 || tex != 0)) {
                     tmp[3] = 0.0f;
                     tmp[7] = 0.0f;
                     tmp[11] = 0.0f;
                     PSMTXConcat((MtxPtr)tmp, (MtxPtr)m1, (MtxPtr)tmp);
-                    if (tex != 0) {
+                    if (fh_row) fh_gx_matrix_block_normal(fh_row, tmp);
+                    if (!fh_row && tex != 0) {
                         GXLoadTexMtxImm((const f32(*)[4])tmp, *texMtxIds, GX_MTX3x4);
                     }
-                    if (nrm != 0) {
+                    if (!fh_row && nrm != 0) {
                         GXLoadNrmMtxImm((const f32(*)[4])tmp, *posMtxIds[0]);
                     }
                 }
@@ -1120,6 +1213,7 @@ static void renderOpMatrix(ModelFileHeader* hdr, int* model, MtxBitStream* bs, f
             posMtxIds[0]++;
             texMtxIds++;
         }
+        fh_gx_matrix_block_end(fh_packet);
     }
 }
 
@@ -1482,13 +1576,35 @@ static u32 objSetupRenderOpGxState(GameObject* obj, u8* p2, int* am, MtxBitStrea
         bs->pos = pos + 6;
         idx = (w >> (pos & 7)) & 0x3f;
     }
+    if (fh_minimal_enabled) {fh_minimal_movie_active=0;fh_minimal_callback.active=0;}
     cb = (ObjModelRenderCb)ObjModel_GetRenderCallback((ObjModel*)am);
     if (cb != NULL && cb((int*)obj, am, idx) != 0) {
         return idx;
     }
+    if (fh_render_floor && ObjModel_GetPostRenderCallback((ObjModel*)am) == NULL)
+        return idx;
     op = ObjModel_GetRenderOp(((ObjModel*)am)->file, idx);
     refs = ObjModel_GetRenderOpTextureRefs((ObjModel*)am, idx);
     Rcp_ResetTextureStageState();
+
+    /* Keep base-layer animation, masks and opacity; replace decorative bump
+     * and environment maps with live vertex lighting. Callbacks already ran.
+     * Projected effects, water, decals and special object state fall back. */
+    int fh_uv = fh_surface_uv_base(((ModelFileHeader*)p2)->jointCount, ((ModelFileHeader*)p2)->texMtxCount,
+        refs->texture0 != NULL || refs->texture1 != NULL, op->auxTexture != NULL, op->layerCount);
+    if (fh_surface_detail && fh_uv >= 0 && cb == NULL && !gObjSelectedLightCount && !gObjShadowNear &&
+        !(OBJPRINT_MODEL_DEF(obj)->renderFlags & 0x1d) &&
+        !(op->flags & (0xe0000000u | 0x80 | 0x100 | 0x20000 | 0x100000)) &&
+        op->layerCount <= 2 && !isHeavyFogEnabled()) {
+        ModelRenderOpTextureRefs plain = {0};
+        extern int gRcpNextTexCoord;extern u8 gRcpNumTexGens;
+        gRcpNextTexCoord=fh_uv;gRcpNumTexGens=fh_uv;
+        GXSetTevColor(GX_TEVREG2, *(GXColor*)&gObjGxDefaultChanColor);
+        unsigned hl = ((((ModelFileHeader*)p2)->shaderFlags & 2) && !(((ModelFileHeader*)p2)->flags24 & 2));
+        if (!addShaderLayerStages(obj, op, &plain, 0x80, hl, 0)) addLitColorStage(0);
+        addShaderLayerStages(obj, op, &plain, 0, hl, 0);
+        fh_surface_detail_models++;
+    } else {
     envtex = 0;
     if ((refs->texture0 != NULL || refs->texture1 != NULL) && op->auxTexture != NULL) {
         void* t = textureIdxToPtr((uintptr_t)op->auxTexture);
@@ -1608,6 +1724,7 @@ static u32 objSetupRenderOpGxState(GameObject* obj, u8* p2, int* am, MtxBitStrea
         }
         addShaderLayerStages(obj, op, refs, 0, hl, nlay);
     }
+    } /* original complex constructor */
     if (isHeavyFogEnabled() && !(((ModelFileHeader*)p2)->flags & 0x100)) {
         getFogColorRgb(fogc);
         renderHeavyFog(fogc);
@@ -1640,6 +1757,8 @@ static u32 objSetupRenderOpGxState(GameObject* obj, u8* p2, int* am, MtxBitStrea
     {
         ObjModelRenderCb pcb = (ObjModelRenderCb)ObjModel_GetPostRenderCallback((ObjModel*)am);
         if (pcb != NULL) {
+            extern void fh_retained_scope_end(void);
+            fh_retained_scope_end();
             pcb((int*)obj, am, idx);
         } else {
             u8 zon = 1;
@@ -1690,6 +1809,7 @@ static u32 objSetupRenderOpGxState(GameObject* obj, u8* p2, int* am, MtxBitStrea
     return idx;
 }
 static void shaderSetGxFlags(GameObject* obj, u8* m, u8* shader) {
+    if (fh_render_floor) return;
     u8 blend;
     u8 zwrite;
     u8 zcmp;
@@ -1779,6 +1899,308 @@ static void shaderSetGxFlags(GameObject* obj, u8* m, u8* shader) {
 }
 
 extern f32 gObjJointMtxTemp[];
+
+static const FhTexture* fh_minimal_base(Shader* shader,FhTexture* out) {
+    if (!shader || !shader->layerCount) return NULL;
+    Texture* texture=textureIdxToPtr((uintptr_t)shader->layers[0].texture);
+    return texture && fh_gx_texture_view(textureGetGXTexObj(texture),out) ? out : NULL;
+}
+static Texture* fh_minimal_model_texture(GameObject* obj,ShaderLayer* layer,float scroll[2]) {
+    Texture* image=textureIdxToPtr((uintptr_t)layer->texture);
+    if (image && layer->materialId) {
+        ObjDef* definition=obj->anim.modelInstance;
+        for (int j=0;j<definition->textureSlotCount;j++) {
+            if (layer->materialId==definition->textureSlotDefs[j].materialIndex) {
+                image=textureGetAnimationFrame(image,obj->anim.textureSlots[j].textureId);break;
+            }
+        }
+        texSlotGetScroll(obj,layer->materialId,scroll,scroll+1);
+    }
+    return image;
+}
+
+extern void postRenderSetAlphaBlendState(void);
+extern void FuelCell_setupModelRenderState(GameObject*);
+extern void shopitem_sparkleBlendSetup(GameObject*);
+static unsigned fh_pica_actor_post_state(const void *callback,unsigned alpha){
+    if(!callback)return FH_PICA_POST_NONE;
+    if(callback==(const void*)postRenderSetAlphaBlendState)return FH_PICA_POST_ADDITIVE;
+    if(callback==(const void*)FuelCell_setupModelRenderState ||
+       callback==(const void*)shopitem_sparkleBlendSetup)
+        return alpha==255?FH_PICA_POST_OPAQUE:FH_PICA_POST_ADDITIVE;
+    return ~0u; /* An unknown callback remains an explicit missing feature. */
+}
+
+
+#include "fh_native_actor_fog_owner.h"
+#include "fh_asset_paths.h"
+#include "fh_graphics_options.h"
+extern unsigned char lbl_803DB5E8;
+#include "fh_pica_actor_fog_draw.h"
+#include "fh_pica_specular.h"
+#include "fh_pica_fur.h"
+#include "fh_pica_actor_alpha_source.h"
+#include "fh_pica_actor_unlit.h"
+static unsigned fh_pica_actor_solid_color(const Shader* sh) {
+    /* addShaderLayerStages' untextured KColor branch. Other untextured
+     * families retain their vertex/object colour semantics. */
+    return sh->layerCount==1 && !sh->layers[0].texture &&
+        (sh->reg1Texture || (sh->pad00[0]==255 && sh->pad00[1]==255 && sh->pad00[2]==255));
+}
+
+#include "fh_pica_actor_live.h"
+static void fh_pica_actor_live_materials(const FhSceneAsset* asset,ModelFileHeader* header,GameObject* obj,ObjModel* model,unsigned post_state) {
+    /* Prepared native target, borrowed synchronously for this object. Read
+     * live game parameters once, then publish all material state together. */
+    const FhPicaActorLiveCommon common={obj->anim.renderAlpha,gObjAlphaCompareThreshold,
+        post_state,obj->lightColorSlot,obj->sphereMapIntensity,fh_pica_cloud_mode,
+        header->flags,gObjShadowNear!=0};
+    for(unsigned i=0;i<header->renderOpCount;i++) {
+        unsigned dual;
+        FhPicaActorLiveTarget *target=fh_pica_actor_live_target(asset,i,&dual);
+        if(!target)continue; /* Unused source declarations have no native draw. */
+        Shader* sh=header->renderOps+i;
+        unsigned alpha=(obj->anim.renderAlpha+1)*sh->alpha>>8;
+        unsigned konst=(alpha<<24)|0x00ffffffu;
+        if(fh_pica_actor_solid_color(sh))
+            konst=sh->pad00[4]|((unsigned)sh->pad00[5]<<8)|((unsigned)sh->pad00[6]<<16)|(alpha<<24);
+        FhPicaActorLiveValues value={.alpha=alpha,.konst=konst,.flags=sh->flags,
+            .selector=model->textureRefs?model->textureRefs[i].swapSelector:0,
+            .environment_enabled=sh->reg1Texture!=NULL};
+        float (*scroll)[2]=value.scroll;unsigned *frames=value.frames;
+        if(!(fh_graphics_options&FH_GRAPHICS_NO_ACTOR_TEX))for(unsigned layer=0;layer<(dual?2u:1u);layer++) {
+            unsigned material=sh->layerCount>layer?sh->layers[layer].materialId:0;
+            if(material && obj->anim.textureSlots) {
+                ObjDef* def=obj->anim.modelInstance;
+                for(unsigned j=0;j<def->textureSlotCount;j++)if(def->textureSlotDefs[j].materialIndex==material) {
+                    frames[layer]=obj->anim.textureSlots[j].textureId;
+                    scroll[layer][0]=obj->anim.textureSlots[j].offsetS*.0001f;
+                    scroll[layer][1]=obj->anim.textureSlots[j].offsetT*.0001f;
+                    break;
+                }
+            }
+        }
+        if(!dual){frames[1]=frames[0];scroll[1][0]=scroll[0][0];scroll[1][1]=scroll[0][1];}
+        fh_pica_actor_live_publish(target,&common,&value);
+    }
+}
+
+
+#include "fh_graphics_options.h"
+static void fh_pica_actor_live_lighting(ModelFileHeader* header,GameObject* obj) {
+#if FH_PICA_ACTOR_LIGHTING_EXPERIMENT
+    FhPicaActorLighting state={0};
+    state.normal_scale=obj->anim.rootMotionScale!=0?1.f/obj->anim.rootMotionScale:0;
+    state.vertex_material=!!(header->flags24&2);
+    unsigned flags=header->shaderFlags;
+    /* Source channel 4 is COLOR0A0: it applies the selected material and
+     * lighting to alpha too. The object-colour override explicitly restores
+     * unlit vertex alpha. Disabled-light channel material alpha is always 255. */
+    state.alpha_lighting=!!(header->flags24&0x10) && !(flags&2);
+    state.ambient[3]=1.f;
+    if(fh_graphics_options&FH_GRAPHICS_NO_LIGHTING) {
+        /* Keep pipeline identity and the following colour-fade publication.
+         * Disabled vertex lighting consumes none of these light parameters. */
+        state.enabled=1;
+    }else if(flags&2) {
+        if(header->flags24&(2|0x10)) {
+            state.enabled=1;state.vertex_material=1;
+            state.ambient[0]=gObjCurChanColor.r/255.f;
+            state.ambient[1]=gObjCurChanColor.g/255.f;
+            state.ambient[2]=gObjCurChanColor.b/255.f;
+        }else {
+            /* addShaderLayerStages' hl path consumes the object override. */
+            state.enabled=1;state.vertex_material=0;
+            state.ambient[0]=gObjCurChanColor.r/255.f;
+            state.ambient[1]=gObjCurChanColor.g/255.f;
+            state.ambient[2]=gObjCurChanColor.b/255.f;
+        }
+    }else if(flags&9) {
+        state.enabled=1;
+        float value=(state.vertex_material || (flags&1))?1.f:0.f;
+        state.ambient[0]=state.ambient[1]=state.ambient[2]=value;
+    }else {
+        GXColor ambient={0,0,0,255};
+        if(!(flags&0xc)) {
+            int slot=obj->anim.modelInstance->modelLightMaskIndex;
+            if(!slot){skyApplyLightSlot(obj->lightColorSlot);skyGetAmbientColor(obj->lightColorSlot,&ambient.r,&ambient.g,&ambient.b);}
+            else lightGetColor(slot,&ambient.r,&ambient.g,&ambient.b);
+        }
+        ModelLightStruct* lights[8];s32 count=0;
+        unsigned max=obj->anim.modelInstance->maxLights;
+        if(max>8)fh_platform_panic("PICA object light capacity");
+        if(max)modelLightStruct_selectObjectLights(obj,lights,max,&count,(flags&0xc)?2:6);
+        if(count<0 || count>8)fh_platform_panic("PICA selected light count");
+        state.enabled=1;
+        if(!count) {
+            /* GX lighting disabled: use selected material source directly. */
+            state.ambient[0]=state.ambient[1]=state.ambient[2]=state.vertex_material?1.f:0.f;
+        }else {
+            state.ambient[0]=ambient.r/255.f;state.ambient[1]=ambient.g/255.f;state.ambient[2]=ambient.b/255.f;
+            state.ambient[3]=(flags&0xc)?1.f:0.f;
+            for(unsigned i=0;i<(unsigned)count;i++) {
+                ModelLightStruct* light=lights[i];
+                unsigned directional=light->lightKind==MODEL_LIGHT_KIND_DIRECTIONAL;
+                if(!directional && light->lightKind!=MODEL_LIGHT_KIND_POINT)fh_platform_panic("PICA diffuse light kind");
+                if(!directional && (light->spotFunction!=0 ||
+                    ((obj->anim.modelInstance->flags&OBJDEF_FLAG_DIFFERENT_LIGHT_COLOR) &&
+                     (light->attenuationK0!=1.f || light->attenuationK1!=0 || light->attenuationK2!=0))))
+                    state.partial_lights++;
+                float amount=directional || (obj->anim.modelInstance->flags&OBJDEF_FLAG_DIFFERENT_LIGHT_COLOR)?1.f:light->lightAmount;
+                for(unsigned c=0;c<4;c++){
+                    float value=light->diffuseColor[c]*amount;
+                    if(value<0)value=0;if(value>255)value=255;
+                    state.color[i][c]=(unsigned)value/255.f;
+                }
+                state.position[i][0]=directional?-light->viewDirX:light->viewX;
+                state.position[i][1]=directional?-light->viewDirY:light->viewY;
+                state.position[i][2]=directional?-light->viewDirZ:light->viewZ;
+                state.position[i][3]=directional?0.f:1.f;
+                state.active|=1u<<i;
+            }
+        }
+    }
+    fh_pica_scene_actor_lighting(&state);
+#else
+    (void)header;(void)obj;
+#endif
+
+    /* Original addColorFadeStage flags and byte parameters. No render callback
+     * or GX material interpreter is invoked; gameplay owns the fade animation. */
+    unsigned fade=0;
+    if(obj->colorFadeFlags&(OBJ_COLOR_FADE_FLAG_ACTIVE|OBJ_COLOR_FADE_FLAG_OVERRIDE))
+        fade=(unsigned)obj->colorFadeRed|((unsigned)obj->colorFadeGreen<<8)|
+             ((unsigned)obj->colorFadeBlue<<16)|((unsigned)obj->colorFadeAlpha<<24);
+    fh_pica_color_fade_set(fade);
+}
+
+static const FhSceneAsset* fh_minimal_model_prepare(ModelFileHeader* header, ObjModel* instance) {
+    if(fh_pica_scene_enabled)return NULL; /* New backend never uses legacy source validation. */
+    const FhSceneAsset* asset = fh_native_scene_find(header);
+    if (!asset) { fh_minimal_missing++; fh_minimal_coverage_failure(1,0,0); return NULL; }
+    FhModelSource source = {
+        .positions=instance->vtxBuf[(instance->bufferFlags >> 1) & 1], .normals=instance->normalBuf,
+        .colors=header->colors, .uvs=header->texCoords, .position_count=header->vertexCount,
+        .normal_count=header->normalCount, .color_count=header->colorCount, .uv_count=header->texCoordCount,
+        .normal_stride=(header->flags24 & 8) ? 9 : 3
+    };
+    unsigned rigid=!header->jointCount;
+    unsigned fixed_world=!rigid && header->vertexAnimEntries!=NULL;
+    unsigned pose_count=rigid?1:header->jointCount+fixed_world;
+    unsigned failure=0;
+    if (pose_count>256 || asset->bones != pose_count || asset->bindings != (rigid?1:pose_count + header->extraJointCount)) failure=2;
+    else if (!fh_native_scene_source(asset,4,header->instrs,header->instrsBitLenWords)) failure=3;
+    else if (!fh_native_scene_source(asset,5+header->displayListCount,header->extraJointDefs,header->extraJointCount*4u)) failure=4;
+    else if (!fh_native_scene_prepare_model(asset,&source)) failure=5;
+    if (failure) {fh_minimal_rejected++;fh_minimal_coverage_failure(failure,asset->id,0);return NULL;}
+    for (unsigned i=0;i<header->displayListCount;i++) {
+        ModelDisplayListEntry* list=modelFileGetDisplayList((u8*)header,i);
+        if (!fh_native_scene_source(asset,5+i,list->dlist,list->dlistSize)) { fh_minimal_rejected++; fh_minimal_coverage_failure(6,asset->id,i); return NULL; }
+    }
+    return asset;
+}
+static void fh_minimal_model_draw(const FhSceneAsset* asset,GameObject* obj,
+    ModelFileHeader* header,ObjModel* instance,unsigned ordinal,unsigned list,Shader* shader,
+    const float view[3][4],const float world[3][4],const unsigned char* unlit_rgba) {
+    if (!asset) return;
+    unsigned gi;
+    if (!fh_native_scene_draw(asset,ordinal,list,shader-header->renderOps,&gi)) { fh_minimal_rejected++; fh_minimal_coverage_failure(7,asset->id,ordinal); return; }
+    if (gi==65535) { fh_minimal_missing++; fh_minimal_coverage_failure(8,asset->id,ordinal); return; } /* Compiled omission. */
+    FhSceneGroup group;fh_native_scene_group(asset,gi,&group);
+    /* Callback materials are consumed at each original draw, never before
+     * a future callback. Ordinary groups retain their existing batching. */
+    if (ObjModel_GetRenderCallback(instance) || ObjModel_GetPostRenderCallback(instance)) {
+        FhSceneSection section;fh_native_scene_section(asset,group.first_section+ordinal-group.first,&section);
+        group.index+=section.first;group.indices=section.count;group.draws=1;
+    } else if (ordinal!=group.first) return;
+    unsigned rigid=!header->jointCount;
+    unsigned fixed_world=!rigid && header->vertexAnimEntries!=NULL;
+    unsigned pose_count=rigid?1:header->jointCount+fixed_world;
+    /* Fixed slot9 contains object-world for CPU-deformed vertices; other
+     * slots still contain animated joints. Preserve both within one palette. */
+    float combined[256*16];const float* poses;
+    if (rigid || fixed_world || unlit_rgba) {
+        unsigned n=rigid?0:header->jointCount;
+        if (n && unlit_rgba) {
+            /* modelDoAltRenderInstrs animates in identity/local space;
+             * modelLoadMtxsToGx applies view*object*joint. The ordinary
+             * path already animates in world space. Compose only here. */
+            for (unsigned bone=0;bone<n;bone++) {
+                PSMTXConcat((const float(*)[4])world,
+                    (const float(*)[4])ObjModel_GetJointMatrix((u8*)instance,bone),
+                    (float(*)[4])(combined+bone*16));
+                combined[bone*16+12]=combined[bone*16+13]=combined[bone*16+14]=0;
+                combined[bone*16+15]=1;
+            }
+        } else if (n) memcpy(combined,ObjModel_GetJointMatrix((u8*)instance,0),n*16*sizeof(float));
+        if (rigid || fixed_world) {
+            for (unsigned i=0;i<12;i++) combined[n*16+i]=((const float*)world)[i];
+            combined[n*16+12]=combined[n*16+13]=combined[n*16+14]=0;combined[n*16+15]=1;
+        }
+        poses=combined;
+    } else poses=(const float*)ObjModel_GetJointMatrix((u8*)instance,0);
+    FhTexture texture,sphere;const FhTexture* base=fh_minimal_base(shader,&texture);
+    FhMinimalModelLayers layers={0};
+    if (group.two_uv) {
+        if (shader->layerCount!=2 || shader->layers[0].typeBits!=129 ||
+            (shader->layers[1].typeBits!=0 && shader->layers[1].typeBits!=128) ||
+            (shader->flags & SHADER_FLAG_DECAL_LAYER)) { fh_minimal_rejected++;fh_minimal_coverage_failure(9,asset->id,shader-header->renderOps);return; }
+        layers.layered=1;
+    }
+    ModelRenderOpTextureRefs* refs=ObjModel_GetRenderOpTextureRefs(instance,shader-header->renderOps);
+    /* Alternate models keep their fixed image and caller tint. Single-layer
+     * Swizzled materials can carry an independent I4 opacity plane. */
+    unsigned live_layers=!fh_minimal_callback.active && (group.two_uv || shader->layerCount==1);
+    if (live_layers) {
+        for (unsigned i=0;i<(layers.layered?2u:1u);i++) {
+            Texture* image=unlit_rgba?textureIdxToPtr((uintptr_t)shader->layers[i].texture):
+                fh_minimal_model_texture(obj,shader->layers+i,layers.scroll[i]);
+            if (!image && !layers.layered) { base=NULL;break; }
+            if (!image || !fh_gx_texture_view(textureGetGXTexObj(image),i?&layers.second:&texture)) {
+                fh_minimal_rejected++;return;
+            }
+            if (!i) base=&texture;
+            if (!layers.layered && image->imageOffset) {
+                unsigned white=shader->pad00[0]==255 && shader->pad00[1]==255 && shader->pad00[2]==255;
+                unsigned highlight=(header->shaderFlags&2) && !(header->flags24&2);
+                if (unlit_rgba || refs->texture0 || white || (highlight && !(shader->vtxAttrFlags&0x10))) {
+                    GXTexObj mask;textureInitSecondaryGXTexObj(image,&mask);
+                    if (!fh_gx_texture_view(&mask,&layers.second)) {fh_minimal_rejected++;return;}
+                    layers.masked=1;memcpy(layers.scroll[1],layers.scroll[0],sizeof(layers.scroll[0]));
+                }
+            }
+        }
+        layers.both_before_lighting=layers.layered && shader->layers[1].typeBits==128;
+        layers.alpha=unlit_rgba?unlit_rgba[3]:((obj->anim.renderAlpha+1)*shader->alpha)>>8;
+        /* Original first-layer KAlpha/Swizzled materials do not multiply by
+         * channel alpha. Keep projected/shadow alpha chains separate until
+         * their preceding stages are represented by this native material. */
+        unsigned white=shader->pad00[0]==255 && shader->pad00[1]==255 && shader->pad00[2]==255;
+        layers.constant_alpha=!unlit_rgba && !layers.layered &&
+            (refs->texture0 || white || !(shader->vtxAttrFlags&0x10)) &&
+            !gObjShadowNear && !gObjSelectedLightCount &&
+            !(OBJPRINT_MODEL_DEF(obj)->renderFlags&4) &&
+            (base || !refs->texture1);
+        /* Original mode-0 Swizzled/KColor RGB uses KONST, not RASC.
+         * Keep mode-8 and preceding projected/shadow/caustic chains separate. */
+        unsigned highlight=(header->shaderFlags&2) && !(header->flags24&2);
+        layers.constant_rgb=!unlit_rgba && !layers.layered && base &&
+            !refs->texture0 && !refs->texture1 && !gObjSelectedLightCount &&
+            !gObjShadowNear && !(OBJPRINT_MODEL_DEF(obj)->renderFlags&0x14) &&
+            (white || highlight);
+        layers.rgb=white?0x00ffffffu:((unsigned)gObjCurChanColor.r |
+            ((unsigned)gObjCurChanColor.g<<8) | ((unsigned)gObjCurChanColor.b<<16));
+    }
+    const FhTexture* illumination=NULL;
+    if (!unlit_rgba && refs->texture0 && fh_gx_texture_view(textureGetGXTexObj((Texture*)refs->texture0),&sphere))
+        illumination=&sphere;
+    unsigned char fade[4]={obj->colorFadeRed,obj->colorFadeGreen,obj->colorFadeBlue,obj->colorFadeAlpha};
+    unsigned fading=!unlit_rgba && (obj->colorFadeFlags & (OBJ_COLOR_FADE_FLAG_ACTIVE|OBJ_COLOR_FADE_FLAG_OVERRIDE));
+    unsigned scissor[4];GXGetScissor(scissor,scissor+1,scissor+2,scissor+3);
+    fh_minimal_group(asset,&group,poses,pose_count,
+        view,obj->anim.renderAlpha/255.0f,base,illumination,obj->sphereMapIntensity,shader->flags,header->flags,unlit_rgba,scissor,live_layers?&layers:NULL,fading?fade:NULL);
+}
+
 static void modelDoAltRenderInstrs(GameObject* obj, GameObject* obj2, u8* m, int p4) {
     f32 wm[16];
     f32 cm[12];
@@ -1837,6 +2259,7 @@ static void modelDoAltRenderInstrs(GameObject* obj, GameObject* obj2, u8* m, int
         color[0] = 0xff;
     }
     color[3] = obj->anim.renderAlpha;
+    if (fh_minimal_enabled) {fh_minimal_movie_active=0;fh_minimal_callback.active=0;}
     cb = (ObjModelRenderCb)ObjModel_GetRenderCallback((ObjModel*)am);
     if (gObjRenderSetupDone == 0 || cb != NULL) {
         Camera_RebuildProjectionMatrix();
@@ -1896,7 +2319,12 @@ static void modelDoAltRenderInstrs(GameObject* obj, GameObject* obj2, u8* m, int
             idx = (w >> (pos & 7)) & 0xff;
         }
         dl = modelFileGetDisplayList(m, idx);
-        GXCallDisplayList(dl->dlist, dl->dlistSize);
+        if (fh_minimal_enabled) {
+            const FhSceneAsset* asset=fh_minimal_model_prepare((ModelFileHeader*)m,(ObjModel*)am);
+            fh_minimal_model_draw(asset,obj,(ModelFileHeader*)m,(ObjModel*)am,0,idx,
+                ((ModelFileHeader*)m)->renderOps,(const float(*)[4])Camera_GetViewMatrix(),
+                (const float(*)[4])wm,color);
+        } else GXCallDisplayList(dl->dlist, dl->dlistSize);
     }
 }
 
@@ -1919,7 +2347,7 @@ void objRenderInvalidateStateCache(void) {
 }
 typedef void (*ObjShadowCb)(GameObject* obj, int* am, f32* wm);
 
-f32 gObjBoneMtxBuffer[0xC00] ALIGN_DECL(32);
+f32 gObjBoneMtxBuffer[0xC00] __attribute__((aligned(32)));
 
 static void objRenderShadowModel(GameObject* obj, GameObject* obj2, u8* m, int p4) {
     int done;
@@ -1959,6 +2387,8 @@ static void objRenderShadowModel(GameObject* obj, GameObject* obj2, u8* m, int p
             {
                 ObjShadowCb cb = (ObjShadowCb)obj->afterBonesCallback;
                 if (cb != NULL && obj2 == obj) {
+                    fh_model_resources_escape(m);
+                    fh_model_resources_escape(am);
                     cb(obj, am, wm);
                 }
             }
@@ -1968,6 +2398,11 @@ static void objRenderShadowModel(GameObject* obj, GameObject* obj2, u8* m, int p
         }
         if (((ModelFileHeader*)m)->morphTargetCount != 0) {
             ObjModel_ApplyBlendChannels((ObjModel*)am);
+            /* Preserve the exact original fixed-point result BEFORE the
+             * original CPU skin/hit-volume producer may reuse this buffer. */
+            fh_pica_morph_changed(am,((ObjModel*)am)->vtxBufDirty ?
+                ((ObjModel*)am)->vtxBuf[(((ObjModel*)am)->bufferFlags>>1)&1] : NULL);
+
         }
         if (did != 0) {
             u8* vtx;
@@ -2124,7 +2559,68 @@ static void objRenderShadowModel(GameObject* obj, GameObject* obj2, u8* m, int p
 }
 extern u8 gObjGxTexMtxIdTable[12];
 
+#include "fh_retained_geometry.h"
+#include "fh_gx_dispatch.h"
+
+static const FhSceneAsset* fh_scene_model_prepare(GameObject* obj, u8* model, ObjModel* instance,
+    u8 pass, unsigned char admitted[256], FhModelSource* source) {
+    ModelFileHeader* header = (ModelFileHeader*)model;
+    if (fh_render_floor || !fh_native_scene_enabled) return NULL;
+    fh_native_scene_admission[0]++;
+    if (pass != 0 || obj->anim.renderAlpha != 255 || ObjModel_GetRenderCallback(instance) != NULL ||
+        ObjModel_GetPostRenderCallback(instance) != NULL || isHeavyFogEnabled() || gObjShadowNear ||
+        gObjSelectedLightCount || (OBJPRINT_MODEL_DEF(obj)->renderFlags & 0x1d) ||
+        (obj->colorFadeFlags & (OBJ_COLOR_FADE_FLAG_ACTIVE | OBJ_COLOR_FADE_FLAG_OVERRIDE)) ||
+        (header->flags & (0x400 | 0x2000)) || (header->shaderFlags & 2) || header->vertexAnimEntries) return NULL;
+    fh_native_scene_admission[1]++;
+    fh_gx_dispatch_barrier();
+    const FhSceneAsset* asset = fh_native_scene_find(model);
+    if (asset) fh_native_scene_admission[2]++;
+    if (!asset || asset->bones != header->jointCount || asset->bindings != header->jointCount + header->extraJointCount ||
+        !fh_native_scene_source(asset, 4, header->instrs, header->instrsBitLenWords) ||
+        !fh_native_scene_source(asset, 5 + header->displayListCount, header->extraJointDefs, header->extraJointCount * 4u)) return NULL;
+    for (unsigned i = 0; i < header->jointCount; i++) {
+        ModelBone* bone = (ModelBone*)(header->jointData + i * 28);
+        const float* tail = (const float*)(asset->meta + asset->tails_at + i * 12);
+        if (bone->tail[0] != tail[0] || bone->tail[1] != tail[1] || bone->tail[2] != tail[2]) return NULL;
+    }
+    for (unsigned i = 0; i < header->displayListCount; i++) {
+        ModelDisplayListEntry* list = modelFileGetDisplayList(model, i);
+        if (!fh_native_scene_source(asset, 5 + i, list->dlist, list->dlistSize)) return NULL;
+    }
+    *source = (FhModelSource){
+        .positions=instance->vtxBuf[(instance->bufferFlags >> 1) & 1], .normals=instance->normalBuf,
+        .colors=header->colors, .uvs=header->texCoords, .position_count=header->vertexCount,
+        .normal_count=header->normalCount, .color_count=header->colorCount, .uv_count=header->texCoordCount,
+        .normal_stride=(header->flags24 & 8) ? 9 : 3
+    };
+    if (!fh_native_scene_prepare_model(asset, source)) return NULL;
+    fh_native_scene_admission[3]++;
+    signed char material[64]; memset(material, -1, sizeof(material));
+    memset(admitted, 0, 256);
+    for (unsigned i = 0; i < asset->groups; i++) {
+        FhSceneGroup group; fh_native_scene_group(asset, i, &group);
+        unsigned ok = fh_renderer_scene_page(group.page) != NULL;
+        for (unsigned j = 0; ok && j < group.draws; j++) {
+            FhSceneSection section; fh_native_scene_section(asset, group.first_section + j, &section);
+            if (section.shader >= header->renderOpCount) { ok = 0; break; }
+            if (material[section.shader] < 0) material[section.shader] = fh_scene_material(&section, ObjModel_GetRenderOp(header, section.shader), 0);
+            ok = material[section.shader];
+        }
+        admitted[i] = ok; fh_native_scene_admission[ok ? 4 : 5]++;
+    }
+    return asset;
+}
 void modelDoRenderInstrs(GameObject* obj, GameObject* obj2, u8* m, u8 passMask) {
+    unsigned fh_owned_model_scope = 0;
+    const FhModelAsset* fh_native_asset = NULL;
+    unsigned fh_native_ordinal = 0, fh_native_until = 0;
+    const FhSceneAsset* fh_scene = NULL;
+    const FhSceneAsset* fh_minimal_asset = NULL;
+    FhModelSource fh_scene_source;
+    unsigned char fh_scene_admitted[256];
+    unsigned fh_scene_until = 0, fh_scene_state_native = 0;
+    MtxBitStream fh_scene_material_bs;
     int joff;
     f32 fm[16];
     f32 sm[16];
@@ -2223,6 +2719,8 @@ void modelDoRenderInstrs(GameObject* obj, GameObject* obj2, u8* m, u8 passMask) 
             {
                 ObjShadowCb cb = (ObjShadowCb)obj->afterBonesCallback;
                 if (cb != NULL && obj2 == obj) {
+                    fh_model_resources_escape(m);
+                    fh_model_resources_escape(am);
                     cb(obj, am, wm);
                 }
             }
@@ -2233,6 +2731,11 @@ void modelDoRenderInstrs(GameObject* obj, GameObject* obj2, u8* m, u8 passMask) 
         if ((fuzzPass == 0 && (passMaskCopy & 8) == 0) || gObjFuzzLayerIndex == 0) {
             if (((ModelFileHeader*)m)->morphTargetCount != 0) {
                 ObjModel_ApplyBlendChannels((ObjModel*)am);
+            /* Preserve the exact original fixed-point result BEFORE the
+             * original CPU skin/hit-volume producer may reuse this buffer. */
+            fh_pica_morph_changed(am,((ObjModel*)am)->vtxBufDirty ?
+                ((ObjModel*)am)->vtxBuf[(((ObjModel*)am)->bufferFlags>>1)&1] : NULL);
+
             }
             if (did != 0) {
                 u8* vtx;
@@ -2261,207 +2764,122 @@ void modelDoRenderInstrs(GameObject* obj, GameObject* obj2, u8* m, u8 passMask) 
         }
         ((ObjModel*)am)->bufferFlags |= 8;
     }
-    fuzzShadowPass = passMaskCopy & 2;
-    if (fuzzShadowPass || fuzzPass || (passMaskCopy & 8)) {
-        int j;
-        f32 one;
-        j = 0;
-        joff = 0;
-        one = 1.0f;
-        for (; j < ((ModelFileHeader*)m)->jointCount; j++) {
-            f32* jm;
+    if(passMask==16)return; /* Native fur: ordinary world-space pose preparation only. */
+    /* Animation, after-bones callbacks and hit spheres above still run.
+     * No texture scope is open yet; callback-free visual setup ends here. */
 
-            sc = (f32)gObjFuzzStep * (fade / *(f32*)(((ModelFileHeader*)m)->jointBlendData + joff + 0xc)) + one;
-            jm = (f32*)ObjModel_GetJointMatrix((u8*)am, j);
-            PSMTXScale((MtxPtr)sm, sc, sc, sc);
-            if (lbl_803DCC35 == 0) {
-                {
-                    char* jp = (char*)((ModelFileHeader*)m)->jointBlendData + joff;
-                    PSMTXTrans((MtxPtr)tm, -*(f32*)jp, -*(f32*)(jp + 4), -*(f32*)(jp + 8));
+    if(fh_pica_scene_actors && passMask==0){
+        const void *callback=ObjModel_GetRenderCallback((ObjModel*)am);
+        unsigned kind=fh_pica_game_ui_kind(callback);
+        if(!kind)kind=fh_pica_game_reticle_kind(callback);
+        if(kind){
+            if(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_ACTORS|FH_GRAPHICS_NO_HUD))return;
+            const FhSceneAsset *asset=fh_native_scene_find(m);unsigned clip[4];
+            if(!asset)return;
+            if(kind<=FH_PICA_UI_ICON){
+                FhPicaActorLighting light={.normal_scale=1};fh_pica_scene_actor_lighting(&light);
+                fh_pica_game_ui_materials(asset,m,obj,kind);
+            }else{
+                fh_pica_actor_live_lighting((ModelFileHeader*)m,obj);
+                fh_pica_game_reticle_materials(asset,m,obj,kind);
+            }
+            GXGetScissor(clip,clip+1,clip+2,clip+3);Camera_RebuildProjectionMatrix();
+            fh_pica_scene_ui_actor(asset,(const float*)ObjModel_GetJointMatrix((u8*)am,0),
+                ((ModelFileHeader*)m)->jointCount,(const float(*)[4])wm,(const float(*)[4])vm,
+                (const float(*)[4])Camera_GetProjectionMatrix(),clip);
+            return;
+        }
+    }
+    if(fh_pica_scene_actors && passMask==0 &&
+        fh_pica_game_hologram_matches(ObjModel_GetRenderCallback((ObjModel*)am))){
+        if(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_HOLOGRAM))return;
+        const FhSceneAsset *asset=fh_native_scene_find(m);FhPicaHologram state;unsigned clip[4];
+        if(!asset)return;
+        fh_pica_game_hologram_state(obj,&state);
+        GXGetScissor(clip,clip+1,clip+2,clip+3);Camera_RebuildProjectionMatrix();
+        fh_pica_scene_hologram(asset,(const float*)ObjModel_GetJointMatrix((u8*)am,0),
+            ((ModelFileHeader*)m)->jointCount,(const float(*)[4])wm,(const float(*)[4])vm,
+            (const float(*)[4])Camera_GetProjectionMatrix(),clip,&state);
+        return;
+    }
+    unsigned fh_post_state=fh_pica_actor_post_state(ObjModel_GetPostRenderCallback((ObjModel*)am),obj->anim.renderAlpha);
+    unsigned fh_movie=fh_pica_game_movie_matches(ObjModel_GetRenderCallback((ObjModel*)am));
+    unsigned fh_moon=fh_pica_game_moon_matches(ObjModel_GetRenderCallback((ObjModel*)am));
+    if (fh_render_budget_strip && (!ObjModel_GetRenderCallback((ObjModel*)am) || fh_movie || fh_moon) && fh_post_state!=~0u) {
+        if(fh_pica_scene_actors && passMask==0) {
+            /* Original pose, morph and hit-volume updates have already run.
+             * No visible actor needs camera/light/material preparation now. */
+            if(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_ACTORS))return;
+            if((fh_pica_cloud_mode || fh_moon) && (fh_graphics_options&FH_GRAPHICS_NO_SKY))return;
+            const FhSceneAsset* asset=fh_native_scene_find(m);
+            if(!asset)fh_minimal_coverage_failure(36,0,0);
+            else {
+                unsigned clip[4];GXGetScissor(clip,clip+1,clip+2,clip+3);
+                Camera_RebuildProjectionMatrix();
+                if(fh_moon){FhPicaActorLighting unlit={.normal_scale=1};fh_pica_scene_actor_lighting(&unlit);}
+                else fh_pica_actor_live_lighting((ModelFileHeader*)m,obj);
+                fh_pica_actor_live_materials(asset,(ModelFileHeader*)m,obj,(ObjModel*)am,fh_post_state);
+                if(fh_movie){
+                    const void *pixels=fh_pica_game_movie_pixels();
+                    ModelFileHeader *header=(ModelFileHeader*)m;
+                    for(unsigned i=0;i<header->renderOpCount;i++)
+                        if(header->renderOps[i].layers[0].materialId==1)fh_pica_material_movie(asset,i,pixels);
                 }
-                PSMTXConcat((MtxPtr)sm, (MtxPtr)tm, (MtxPtr)sm);
-                {
-                    char* jp = (char*)((ModelFileHeader*)m)->jointBlendData + joff;
-                    PSMTXTrans((MtxPtr)tm, *(f32*)jp, *(f32*)(jp + 4), *(f32*)(jp + 8));
+                if(fh_moon){
+                    float phase=fh_pica_game_moon_phase();ModelFileHeader *header=(ModelFileHeader*)m;
+                    for(unsigned i=0;i<header->renderOpCount;i++)
+                        fh_pica_material_moon(asset,i,phase,(header->renderOps[i].alpha*obj->anim.renderAlpha)>>8);
                 }
-                PSMTXConcat((MtxPtr)tm, (MtxPtr)sm, (MtxPtr)sm);
+                const float* fh_actor_poses=(const float*)ObjModel_GetJointMatrix((u8*)am,0);
+                const float(*fh_actor_projection)[4]=(const float(*)[4])Camera_GetProjectionMatrix();
+                unsigned fh_fog_generation=(fh_graphics_options&FH_GRAPHICS_HEIGHT_FOG)?
+                    fh_native_scene_actor_fog_generation(asset):0;
+                if(fh_fog_generation!=1u+(lbl_803DB5E8&1))fh_fog_generation=0;
+                if(!fh_fog_generation || !fh_pica_actor_fog_game_draw(asset,fh_fog_generation,(ObjModel*)am,obj,gObjShadowNear,
+                    fh_actor_poses,((ModelFileHeader*)m)->jointCount,(const float(*)[4])wm,
+                    (const float(*)[4])vm,fh_actor_projection,clip))
+                    fh_pica_scene_actor(asset,fh_actor_poses,((ModelFileHeader*)m)->jointCount,
+                        (const float(*)[4])wm,(const float(*)[4])vm,fh_actor_projection,clip);
             }
-            PSMTXConcat((MtxPtr)jm, (MtxPtr)sm, (MtxPtr)jm);
-            joff += 0x10;
+            return;
         }
-        if (did != 0) {
-            model_multMtxs((u8*)am, wm);
-        }
-    }
-    modelInitMtxs((ModelFileHeader*)m, (ObjModel*)am);
-    modelRenderInstrsState_init((ModelRenderInstrsState*)&bs, ((ModelFileHeader*)m)->instrs,
-                                ((ModelFileHeader*)m)->instrsBitLenWords << 3,
-                                ((ModelFileHeader*)m)->instrsBitLenWords << 3);
-    {
-        f32 inv = 1.0f / obj->anim.rootMotionScale;
-        PSMTXScale((MtxPtr)sm, inv, inv, inv);
-    }
-    if (((ModelFileHeader*)m)->vertexAnimEntries != NULL) {
-        if (fuzzPass || fuzzShadowPass || (passMaskCopy & 8)) {
-            sc2 =
-                1.0f + (1.5f * ((f32)(gObjFuzzLayerIndex + 1) * fade)) / ((ModelFileHeader*)m)->vertexAnimScaleDivisor;
-            PSMTXTrans((MtxPtr)tm, -((ModelFileHeader*)m)->vertexAnimPivot[0],
-                       -((ModelFileHeader*)m)->vertexAnimPivot[1], -((ModelFileHeader*)m)->vertexAnimPivot[2]);
-            PSMTXScale((MtxPtr)sm, sc2, sc2, sc2);
-            PSMTXConcat((MtxPtr)sm, (MtxPtr)tm, (MtxPtr)sm);
-            PSMTXTrans((MtxPtr)tm, ((ModelFileHeader*)m)->vertexAnimPivot[0], ((ModelFileHeader*)m)->vertexAnimPivot[1],
-                       ((ModelFileHeader*)m)->vertexAnimPivot[2]);
-            PSMTXConcat((MtxPtr)tm, (MtxPtr)sm, (MtxPtr)sm);
-            PSMTXConcat((MtxPtr)wm, (MtxPtr)sm, (MtxPtr)t2m);
-            PSMTXConcat((MtxPtr)vm, (MtxPtr)t2m, (MtxPtr)fm);
-        } else {
-            PSMTXConcat((MtxPtr)vm, (MtxPtr)wm, (MtxPtr)fm);
-        }
-        {
-            f32 z;
-            GXLoadPosMtxImm((const f32(*)[4])fm, gObjGxPosMtxIdTable[9]);
-            z = 0.0f;
-            fm[3] = z;
-            fm[7] = z;
-            fm[11] = z;
-            PSMTXConcat((MtxPtr)fm, (MtxPtr)sm, (MtxPtr)fm);
-            GXLoadNrmMtxImm((const f32(*)[4])fm, gObjGxPosMtxIdTable[9]);
-            GXLoadTexMtxImm((const f32(*)[4])fm, gObjGxTexMtxIdTable[9], GX_MTX3x4);
-        }
-    }
-    shadowPass = passMaskCopy & 1;
-    if (shadowPass != 0) {
-        GXSetNumTexGens(0);
-        GXSetNumTevStages(1);
-        GXSetNumIndStages(0);
-        GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
-        {
-            u32 sh;
-            GameObject* o;
-            GameObject* nxt;
-            o = obj;
-            while ((nxt = o->ownerObj) != NULL) {
-                o = nxt;
-            }
-            sh = o->anim.modelState->shadowCastSlot->mode;
-            if (sh == 0xff) {
-                GXSetTevColor(GX_TEVREG2, *(GXColor*)&lbl_803DB468);
-                GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_NOOP);
-            } else {
-                if (sh < 8) {
-                    color[0] = 1 << sh;
-                    color[1] = 0;
-                    color[2] = 0;
-                } else {
-                    color[0] = 0;
-                    color[1] = 1 << (sh - 8);
-                    color[2] = 0;
+        if(fh_render_budget_models && passMask==0) {
+            /* Native geometry already records matrix bindings and material
+             * boundaries. Keep original lighting/fog selection, but avoid GX
+             * matrix-cache construction and the visual instruction interpreter.
+             * Animation/morphs/hit volumes above execute exactly once. */
+            const FhSceneAsset* asset=fh_minimal_model_prepare((ModelFileHeader*)m,(ObjModel*)am);
+            if(asset) {
+                Camera_RebuildProjectionMatrix();objSetupLightChannels(m,obj);
+                if(((ModelFileHeader*)m)->flags&0x100)
+                    GXSetFog(GX_FOG_NONE,0,0,0,0,*(GXColor*)&lbl_803DB468);
+                else _gxSetFogParams();
+                fh_minimal_movie_active=0;fh_minimal_callback.active=0;
+                fh_minimal_texture_scope_begin();
+                unsigned ordinal=0;
+                for(unsigned i=0;i<asset->groups;i++) {
+                    FhSceneGroup group;FhSceneSection section;
+                    if(!fh_native_scene_group(asset,i,&group) || group.first!=ordinal ||
+                        !fh_native_scene_section(asset,group.first_section,&section) ||
+                        section.shader>=((ModelFileHeader*)m)->renderOpCount) {
+                        fh_minimal_coverage_failure(25,asset->id,i);break;
+                    }
+                    fh_minimal_model_draw(asset,obj,(ModelFileHeader*)m,(ObjModel*)am,
+                        group.first,section.list,((ModelFileHeader*)m)->renderOps+section.shader,
+                        (const float(*)[4])vm,(const float(*)[4])wm,NULL);
+                    ordinal+=group.draws;
                 }
-                color[3] = 0xff;
-                GXSetTevColor(GX_TEVREG2, *(GXColor*)color);
-                GXSetBlendMode(GX_BM_LOGIC, GX_BL_ONE, GX_BL_ZERO, GX_LO_OR);
+                if(ordinal!=asset->draws)fh_minimal_coverage_failure(26,asset->id,ordinal);
+                fh_minimal_texture_scope_end();
             }
         }
-        GXSetTevDirect(GX_TEVSTAGE0);
-        GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_C2);
-        GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_A2);
-        GXSetTevSwapMode(GX_TEVSTAGE0, GX_TEV_SWAP0, GX_TEV_SWAP0);
-        GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-        GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-        GXSetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, *(GXColor*)&lbl_803DB468);
-        gxSetPeControl_ZCompLoc_(1);
-        GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
-        GXSetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHT_NULL, GX_DF_NONE, GX_AF_NONE);
-        GXSetNumChans(1);
-        if (OBJPRINT_MODEL_DEF(obj)->renderFlags & OBJDEF_RENDERFLAG_PROJECTED_SHADOW) {
-            gxSetZMode_(1, GX_LEQUAL, 1);
-            GXSetCullMode(GX_CULL_FRONT);
-        } else {
-            gxSetZMode_(0, GX_LEQUAL, 0);
-            GXSetCullMode(GX_CULL_NONE);
-        }
-    } else if (fuzzShadowPass != 0) {
-        objFuzzSetupGxState(obj);
-    } else {
-        Camera_RebuildProjectionMatrix();
-        objSetupLightChannels(m, obj);
-        if (((ModelFileHeader*)m)->flags & 0x100) {
-            GXSetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, *(GXColor*)&lbl_803DB468);
-        } else {
-            _gxSetFogParams();
-        }
+        return;
     }
-    GXSetArray(GX_VA_POS, ((ObjModel*)am)->vtxBuf[(((ObjModel*)am)->bufferFlags >> 1) & 1],
-               ((ModelFileHeader*)m)->vertexCount * 6, 6, false);
-    if (((ModelFileHeader*)m)->flags24 & 8) {
-        GXSetArray(GX_VA_NRM, ((ObjModel*)am)->normalBuf, ((ModelFileHeader*)m)->normalCount * 9, 9, false);
-    } else {
-        GXSetArray(GX_VA_NRM, ((ObjModel*)am)->normalBuf, ((ModelFileHeader*)m)->normalCount * 3, 3, false);
-    }
-    GXSetArray(GX_VA_CLR0, ((ModelFileHeader*)m)->colors, ((ModelFileHeader*)m)->colorCount * 2, 2, false);
-    GXSetArray(GX_VA_TEX0, ((ModelFileHeader*)m)->texCoords, ((ModelFileHeader*)m)->texCoordCount * 4, 4, false);
-    GXSetArray(GX_VA_TEX1, ((ModelFileHeader*)m)->texCoords, ((ModelFileHeader*)m)->texCoordCount * 4, 4, false);
-    done = 0;
-    while (!done) {
-        u32 op4;
-        {
-            u32 w;
-            int pos = bs.pos;
-            u8* pAddr = bs.data + (pos >> 3) + 1;
-            w = *(pAddr - 1);
-            w |= *pAddr << 8;
-            w |= *(pAddr + 1) << 16;
-            bs.pos = pos + 4;
-            op4 = (w >> (pos & 7)) & 0xf;
-        }
-        switch (op4) {
-        case 3:
-            modelRenderFn_setVtxDescr(m, (u8*)op, refs, &bs, passMask, &o9, &o8);
-            break;
-        case 1: {
-            u32 idx;
-            if ((passMask == 0 || passMask == 4 || passMask == 8) && lbl_803DCC20 == 0) {
-                idx = objSetupRenderOpGxState(obj, m, am, &bs);
-                op = (int*)ObjModel_GetRenderOp((ModelFileHeader*)m, idx);
-            } else {
-                u32 w;
-                int pos = bs.pos;
-                u8* pAddr = bs.data + (pos >> 3) + 1;
-                w = *(pAddr - 1);
-                w |= *pAddr << 8;
-                w |= *(pAddr + 1) << 16;
-                bs.pos = pos + 6;
-                idx = (w >> (pos & 7)) & 0x3f;
-                op = (int*)ObjModel_GetRenderOp((ModelFileHeader*)m, idx);
-            }
-            refs = ObjModel_GetRenderOpTextureRefs((ObjModel*)am, idx);
-            break;
-        }
-        case 2:
-            if ((passMask != 4 && passMask != 8) || gObjFuzzPassActive != 0) {
-                ModelDisplayListEntry* dl;
-                u32 w;
-                int pos = bs.pos;
-                u8* pAddr = bs.data + (pos >> 3) + 1;
-                w = *(pAddr - 1);
-                w |= *pAddr << 8;
-                w |= *(pAddr + 1) << 16;
-                bs.pos = pos + 8;
-                dl = modelFileGetDisplayList(m, (w >> (pos & 7)) & 0xff);
-                GXCallDisplayList(dl->dlist, dl->dlistSize);
-            } else {
-                bs.pos += 8;
-            }
-            break;
-        case 4:
-            renderOpMatrix((ModelFileHeader*)m, am, &bs, sm, vm, o9, o8, shadowPass);
-            break;
-        case 5:
-            done = 1;
-            break;
-        }
-    }
+    /* Unsupported render callbacks are explicit missing native features,
+     * never a reason to execute the removed visual instruction interpreter. */
+    if(passMask==0)fh_pica_unimplemented_actor_callbacks++;
 }
+
 
 void objTransformHitVolumePoint(f32* mtx, f32* out, s16* in, int flag, GameObject* obj, int e);
 
@@ -2591,7 +3009,12 @@ void objRenderFuzzShadowShells(GameObject* obj) {
 #define OBJPRINT_SEQID_DIE_FOX     0x882
 #define OBJPRINT_SEQID_DIE_KRYSTAL 0x887
 
+#include "fh_retained_geometry.h"
+#include "fh_gx_dispatch.h"
 void objRenderFuzz(GameObject* obj) {
+    if(!(fh_graphics_options&FH_GRAPHICS_FUR) ||
+       (fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_ACTORS)))return;
+
     int n;
     u8 maxN;
     int cnt;
@@ -2634,20 +3057,54 @@ void objRenderFuzz(GameObject* obj) {
         gObjFuzzStep = 1;
     }
     n = 16 - cnt;
-    if (n > 0) {
-        if (n > maxN) {
-            n = maxN;
-        }
-        model = (int*)Obj_GetActiveModel(obj);
-        savedMtx = curObjMtx;
-        ObjModel_SetRenderCallback((u8*)model, objFuzzRenderCb);
-        for (gObjFuzzLayerIndex = 0; gObjFuzzLayerIndex < n; gObjFuzzLayerIndex++) {
-            modelDoRenderInstrs(obj, obj->ownerObj ? obj->ownerObj : obj, (u8*)((ObjModel*)model)->file, 4);
-            curObjMtx = savedMtx;
-        }
-        curObjMtx = 0;
-        ObjModel_SetRenderCallback((u8*)model, NULL);
+
+    if(n<=0)return;
+    if(n>maxN)n=maxN;
+    ObjModel *nativeModel=Obj_GetActiveModel(obj);
+    ModelFileHeader *header=nativeModel->file;
+    const FhSceneAsset *asset=fh_native_scene_find(header);
+    if(!asset)return;
+    if(!(nativeModel->bufferFlags&8)){
+        /* Fur may be the first visible pass for this object. Preserve the
+         * original first-shell animation/morph/hit-volume preparation. The
+         * native-only adapter returns before visual dispatch for pass 16;
+         * ordinary pose preparation retains world-space stream-skin bones.
+         * it contains no GX render-instruction interpreter. */
+        MtxPtr savedWorld=curObjMtx;
+        gObjFuzzLayerIndex=0;
+        modelDoRenderInstrs(obj,obj->ownerObj?obj->ownerObj:obj,(u8*)header,16);
+        curObjMtx=savedWorld;
     }
+    if(!(nativeModel->bufferFlags&8))fh_platform_panic("PICA fur pose not prepared");
+    float world[16];unsigned clip[4];
+    if(curObjMtx)PSMTXCopy(curObjMtx,(MtxPtr)world);
+    else Obj_BuildWorldTransformMatrix(obj,world,0);
+    Texture **noise;int noiseCount;getNewShadowNoiseTextureFrames(&noise,&noiseCount);
+    if(noiseCount!=16)fh_platform_panic("PICA fur noise count");
+    FhPicaFur state={0};
+    state.joint_shape=(const float*)header->jointBlendData;
+    state.stream_skin=header->vertexAnimEntries!=NULL;
+    for(unsigned c=0;c<3;c++)state.pivot[c]=header->vertexAnimPivot[c];
+    state.divisor=header->vertexAnimScaleDivisor;
+    state.step=gObjFuzzStep;state.alpha=obj->anim.renderAlpha;
+    if(state.stream_skin && !(state.divisor>0))fh_platform_panic("PICA fur stream scale");
+    if(!state.stream_skin && header->jointCount && !state.joint_shape)fh_platform_panic("PICA fur joint shape");
+    fh_pica_actor_live_lighting(header,obj);
+    fh_pica_actor_live_materials(asset,header,obj,nativeModel,0);
+    GXGetScissor(clip,clip+1,clip+2,clip+3);Camera_RebuildProjectionMatrix();
+    state.source_layers=(unsigned)n;
+    state.layers=(fh_graphics_options&FH_GRAPHICS_SOURCE_FUR)?(unsigned)n:n>2?2:(unsigned)n;
+    for(unsigned i=0;i<state.layers;i++){
+        unsigned layer=fh_pica_fur_layer(i,state.layers,state.source_layers);
+        state.noise_pages[i]=fh_pica_hud_page(noise[layer]);
+    }
+    /* One object submission shares camera, lighting, attributes and morph
+     * view across shells. Only shell pose/noise changes inside the renderer. */
+    fh_pica_scene_fur(asset,(const float*)ObjModel_GetJointMatrix((u8*)nativeModel,0),header->jointCount,
+        (const float(*)[4])world,(const float(*)[4])Camera_GetViewMatrix(),
+        (const float(*)[4])Camera_GetProjectionMatrix(),clip,&state);
+    gObjFuzzLayerIndex=n;curObjMtx=NULL;
+
 }
 
 void objRenderShadow(GameObject* obj) {
@@ -2868,9 +3325,17 @@ void objSetRenderingShadowPass(u8 x) {
 u8 gObjGxPosMtxIdTable[12] = {0x00, 0x03, 0x06, 0x09, 0x0C, 0x0F, 0x12, 0x15, 0x18, 0x1B, 0x00, 0x00};
 u8 gObjGxTexMtxIdTable[12] = {0x1E, 0x21, 0x24, 0x27, 0x2A, 0x2D, 0x30, 0x33, 0x36, 0x39, 0x00, 0x00};
 
-f32 gObjJointMtxTemp[24] ALIGN_DECL(32) = {
+f32 gObjJointMtxTemp[24] __attribute__((aligned(32))) = {
     1.0f,         0.0f,           0.0f,           0.0f,           0.0f,           1.0f,
     0.0f,         0.0f,           0.0f,           0.0f,           1.0f,           0.0f,
     0.014794691f, 1.6930165e+22f, 2.5424896e+29f, 4.6243438e+30f, 1.6713787e-19f, 3.5253297e+09f,
     13.204376f,   1.8988991e+28f, 2.818281e+20f,  4.2326e+21f,    0.03909816f,    6.162976e-33f,
 };
+
+_Static_assert(__alignof__(gObjBoneMtxBuffer) >= 32, "Native alignment: gObjBoneMtxBuffer");
+
+_Static_assert(__alignof__(gObjJointMtxTemp) >= 32, "Native alignment: gObjJointMtxTemp");
+
+int fh_model_geometry_callback_safe(const void* callback) {
+    return !callback || callback == (const void*)objFuzzRenderCb || callback == (const void*)objFuzzShellRenderCb;
+}

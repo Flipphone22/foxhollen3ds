@@ -1,3 +1,12 @@
+#include "main/texture.h"
+#include "fh_pica_hud.h"
+static void *fh_pica_hud_asset(int id){
+    void *texture=textureLoadAsset(id);fh_pica_game_hud_loaded(texture);return texture;
+}
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
 #include "main/rcp_dolphin.h"
 #include "main/textrender.h"
 #include "main/textrender_internal.h"
@@ -30,7 +39,7 @@ void gameTextInitBoxTextures(void) {
     textureAsset = &gGameTextBoxTexAssets + 1;
     textureSlot = &gGameTextBoxBgTexture + 1;
     while (textureAsset--, textureSlot--, assetCount-- != 0) {
-        *textureSlot = textureLoadAsset(*textureAsset);
+        *textureSlot = fh_pica_hud_asset(*textureAsset);
     }
 
     texture = textureAlloc(0x10, 0x10, 5, 0, 0, 0, 0, 1, 1);
@@ -105,6 +114,7 @@ void gameTextInitBoxTextures(void) {
         row += 4;
     }
     DCFlushRange(gGameTextBoxCornerTexture + 1, 0x200);
+    fh_pica_game_hud_loaded(gGameTextBoxCornerTexture);
 
     texture = textureAlloc(0x14, 0x14, 5, 0, 0, 0, 0, 1, 1);
     gGameTextBoxEdgeTexture = texture;
@@ -149,4 +159,5 @@ void gameTextInitBoxTextures(void) {
         row += 4;
     }
     DCFlushRange(gGameTextBoxEdgeTexture + 1, 800);
+    fh_pica_game_hud_loaded(gGameTextBoxEdgeTexture);
 }

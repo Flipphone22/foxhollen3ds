@@ -1,0 +1,62 @@
+static void test_world_retention(void){
+    setup_sdk();C3D_Context *ctx=&__C3D_Context;
+    FhPicaDrawDescription d={0};d.attributes=ctx->attrInfo;d.buffers=ctx->bufInfo;
+    d.buffers.buffers[0].offset+=0x30000;
+    d.effect=(FhPicaStreamEffect){.zBuffer=1,.zScale=0xbf0000,.cullMode=GPU_CULL_FRONT_CCW,
+        .alphaTest=0x101,.depthTest=0x0f01,.alphaBlend=0x06070000,.fragOpMode=0x100};
+    for(unsigned i=0;i<4;i++)C3D_TexEnvInit(d.stages+i);
+    d.index_address=0x18030000;d.index_count=12;
+    FhPicaStreamArena arena;FhPicaResidentDraw draw;
+    CHECK(fh_pica_stream_arena_init(&arena,arena_storage,8192));
+    CHECK(fh_pica_stream_world_compile(&arena,&draw,&d));
+    FhPicaStreamState state;FhPicaDrawLive live={0};
+    CHECK(fh_pica_stream_sync(&state));CHECK(fh_pica_stream_environment(&live));
+    live.texture_config&=~7u;
+    for(unsigned i=0;i<12;i++)live.material_uniforms[i]=0x3f400000+i;
+    CHECK(fh_pica_stream_draw(&draw,&live,0));drain();
+    for(unsigned step=0;step<128;step++){
+        reset_commands();FhPicaStreamState before=state;
+        uint32_t pending[4]={0x3f800000+step,0x40200000,0x40600000,0x40900000};
+        setrow(0,pending);setrow(7,pending);
+        unsigned offset=registers[GPUREG_ATTRIBBUFFER0_OFFSET];
+        ctx->bufInfo.buffers[0].offset=offset+0x8000+step*16;ctx->flags|=C3DiF_BufInfo;
+        C3D_TexEnvColor(C3D_GetTexEnv(4),step);
+        FhPicaStreamState foreign;CHECK(!fh_pica_stream_sync(&foreign));
+        CHECK(fh_pica_stream_sync(&state));drain();
+        CHECK(fh_pica_stream_active() && !memcmp(&before,&state,sizeof state));
+        CHECK(registers[GPUREG_ATTRIBBUFFER0_OFFSET]==offset);
+        CHECK(registers[GPUREG_TEXENV4_COLOR]==step);
+        CHECK(!memcmp(uniforms[0],pending,16));
+        CHECK(!memcmp(uniforms[0]+28,live.material_uniforms,48));
+        CHECK(C3D_FVUnifDirty[0][7]);
+        CHECK(fh_pica_stream_draw(&draw,&live,0)==30);drain();
+    }
+    C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);
+    CHECK(fh_pica_stream_sync(&state));drain();
+    CHECK(fh_pica_stream_draw(&draw,&live,0)==48);drain();
+    CHECK(registers[GPUREG_FRAGOP_ALPHA_TEST+3]==d.effect.depthTest);
+    unsigned sdk_offset=ctx->bufInfo.buffers[0].offset;
+    fh_pica_stream_end();C3Di_UpdateContext();drain();
+    CHECK(registers[GPUREG_ATTRIBBUFFER0_OFFSET]==sdk_offset);
+    CHECK(!memcmp(uniforms[0]+28,&C3D_FVUnif[0][7],16));
+    reset_commands();CHECK(fh_pica_stream_sync(&state));
+    CHECK(fh_pica_stream_draw(&draw,&live,0));drain();
+    FhPicaActorCommandState actor;
+    CHECK(!fh_pica_actor_stream_begin(&actor));fh_pica_stream_end();
+    CHECK(fh_pica_actor_stream_begin(&actor));CHECK(!fh_pica_stream_active());
+    CHECK(fh_pica_actor_stream_active());
+    CHECK(fh_pica_stream_sync(&state));CHECK(!fh_pica_actor_stream_active());
+    CHECK(fh_pica_stream_draw(&draw,&live,0));drain();
+    ctx->flags|=C3DiF_Program;
+    CHECK(fh_pica_stream_sync(&state));CHECK(!state.valid);
+    CHECK(fh_pica_stream_draw(&draw,&live,0));drain();
+    C3D_FrameSplit(GX_CMDLIST_FLUSH);CHECK(!fh_pica_stream_active());
+    CHECK(fh_pica_stream_sync(&state));C3Di_AptEventHook(APTHOOK_ONRESTORE,NULL);
+    CHECK(!fh_pica_stream_active());C3Di_UpdateContext();drain();
+    reset_commands();sdk_offset=registers[GPUREG_ATTRIBBUFFER0_OFFSET];
+    ctx->bufInfo.buffers[0].offset=sdk_offset+0x4000;ctx->flags|=C3DiF_BufInfo;
+    CHECK(fh_pica_stream_sync(&state));drain();
+    CHECK(registers[GPUREG_ATTRIBBUFFER0_OFFSET]==sdk_offset);
+    fh_pica_stream_end();C3Di_UpdateContext();drain();
+    CHECK(registers[GPUREG_ATTRIBBUFFER0_OFFSET]==sdk_offset+0x4000);
+}

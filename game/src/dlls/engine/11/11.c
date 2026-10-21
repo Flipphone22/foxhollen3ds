@@ -1,3 +1,6 @@
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "main/dll/partfx_interface.h"
 #include "main/audio/sfx.h"
 #include "dolphin/mtx.h"
@@ -770,6 +773,22 @@ int dll_0B_renderEffects(void* drawContext, int unused1, int unused2, u8 sourceO
         }
         if ((int)((PartfxEffectState*)p[slot])->flags & 0x800) {
             ((PartfxEffectState*)p[slot])->frameUpdated = 0;
+        }
+        if (fh_render_budget_strip) {
+            PartfxEffectState* effect=(PartfxEffectState*)p[slot];
+            if ((int)effect->flags & 0x400000) (void)randomGetRange(1,10);
+            Texture* image=effect->textureResource;
+            if (image != NULL && effect->textureFrameTimer != 0) {
+                effect->textureFrameStep -= 1;
+                if (effect->textureFrameStep == 0) {
+                    effect->textureFrameStep=0x3c/effect->textureFrameTimer;
+                    effect->textureFrame += 1;
+                    if (effect->textureFrame >= (u32)(u8)(image->animationFrameCount >> 8))
+                        effect->textureFrame=0;
+                }
+            }
+            effect->activeVertexBufferIndex=1-effect->activeVertexBufferIndex;
+            continue;
         }
         aligned = 0;
         buf1 = ((PartfxEffectState*)p[slot])->vertexBuffers[((PartfxEffectState*)p[slot])->activeVertexBufferIndex];

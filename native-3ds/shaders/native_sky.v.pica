@@ -1,0 +1,29 @@
+; Native untextured point groups. Dynamic colors are indexed by group;
+; geometry stays resident and original star order/RNG are unchanged.
+.fvec view[3], projection[4], colors[76]
+.constf constants(0.0,1.0,0.0,0.0)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0
+.out outq texcoord0w
+.out outuv1 texcoord1
+.out outuv2 texcoord2
+.proc main
+    mov r1.xyz, v0
+    mov r1.w, constants.y
+    dp4 r0.x, view[0], r1
+    dp4 r0.y, view[1], r1
+    dp4 r0.z, view[2], r1
+    mov r0.w, constants.y
+    dp4 outpos.x, projection[0], r0
+    dp4 outpos.y, projection[1], r0
+    dp4 outpos.z, projection[2], r0
+    dp4 outpos.w, projection[3], r0
+    mova a0.x, v0.w
+    mov outcolor, colors[a0.x]
+    mov outuv, constants.xxyy
+    mov outq, constants.yyyy
+    mov outuv1, constants.xxyy
+    mov outuv2, constants.xxyy
+    end
+.end

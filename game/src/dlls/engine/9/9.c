@@ -1,3 +1,9 @@
+#include "fh_graphics_options.h"
+#include "fh_pica_cloud.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "main/dll/cloudaction.h"
 #include "main/rcp_dolphin.h"
 #include "main/texture.h"
@@ -123,6 +129,7 @@ void cloudaction_free(void) {
 }
 
 void renderClouds(int a, int b, int c, int d) {
+    unsigned fh_depth=0;
     u8 ambientRed;
     u8 ambientGreen;
     u8 ambientBlue;
@@ -166,7 +173,9 @@ void renderClouds(int a, int b, int c, int d) {
         gCloudOverrideObject->anim.worldPosZ = v;
         gCloudOverrideObject->anim.localPosZ = v;
         objSetOverrideColor(ambientRed, ambientGreen, ambientBlue);
+        fh_pica_cloud_mode=fh_depth?2:1;
         objRender(a, b, c, d, gCloudOverrideObject, 1);
+        fh_pica_cloud_mode=0;
         return;
     }
 
@@ -189,7 +198,9 @@ void renderClouds(int a, int b, int c, int d) {
             gCloudActionRuntime.upperCloudObj->anim.localPosZ = view->z;
         }
         objSetOverrideColor(ambientRed, ambientGreen, ambientBlue);
+        fh_pica_cloud_mode=fh_depth?2:1;
         objRender(a, b, c, d, gCloudActionRuntime.upperCloudObj, 1);
+        fh_pica_cloud_mode=0;
     }
 
     if (gCloudActionRuntime.mainCloudObj != NULL) {
@@ -210,7 +221,9 @@ void renderClouds(int a, int b, int c, int d) {
         gCloudActionRuntime.mainCloudObj->anim.localPosZ = v;
         gCloudActionRuntime.mainCloudObj->anim.rotY = 0;
         objSetOverrideColor(ambientRed, ambientGreen, ambientBlue);
+        fh_pica_cloud_mode=fh_depth?2:1;
         objRender(a, b, c, d, gCloudActionRuntime.mainCloudObj, 1);
+        fh_pica_cloud_mode=0;
 
         getSunFlareScissorRect(&clipX, &clipY, &clipW, &clipH);
         if (clipW > 0 && clipH > 0) {
@@ -218,58 +231,42 @@ void renderClouds(int a, int b, int c, int d) {
             GXSetScissor(clipX, clipY, clipW, clipH);
             model->file->flags = model->file->flags | 0x2000;
             objSetAlphaCompareThreshold(0x80);
-            GXSetColorUpdate(GX_FALSE);
+            fh_depth=1;
+
+            fh_pica_cloud_mode=fh_depth?2:1;
             objRender(a, b, c, d, gCloudActionRuntime.mainCloudObj, 1);
+            fh_pica_cloud_mode=0;
             model->file->flags = model->file->flags & ~0x2000;
             objSetAlphaCompareThreshold(0);
-            GXSetColorUpdate(GX_TRUE);
+            fh_depth=0;
+
             GXSetScissor(savedClipX, savedClipY, savedClipW, savedClipH);
         }
     }
 
-    cloudT = lightningGetRemainingFraction();
-    if (cloudT > 0.0f) {
+    /* One persistent native billboard, with the original live view position,
+     * size, tint and texture alpha. No per-frame vertices or GX interpretation. */
+    cloudT=lightningGetRemainingFraction();
+    if(cloudT>0){
+        /* Randomness belongs to source weather state even when sky drawing is
+         * disabled. The remaining camera/texture work is presentation only. */
+        if(getHudHiddenFrameCount()==0)gCloudActionGlareQuadSize[0]=randomGetRange(0x1f40,0x2ee0);
+        if(!(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_SKY|FH_GRAPHICS_NO_HUD))){
         lightningGetStartPos(&pos);
-        pos.x -= playerMapOffsetX;
-        pos.z -= playerMapOffsetZ;
-        viewMtx = (MtxPtr)Camera_GetViewMatrix();
-        GXSetCullMode(GX_CULL_NONE);
+        pos.x-=playerMapOffsetX;pos.z-=playerMapOffsetZ;
+        viewMtx=(MtxPtr)Camera_GetViewMatrix();
         Camera_RebuildProjectionMatrix();
-        GXClearVtxDesc();
-        GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
-        GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
-        gxTevResetStages();
-        gxTevColor1TexAlphaStage();
-        gxTevCommitStages();
-        gxSetAdditiveBlendNoZTest();
-        PSMTXMultVec(viewMtx, &pos, &pos);
-        PSMTXTrans(mtx, pos.x, pos.y, pos.z);
-        GXLoadPosMtxImm(mtx, GX_PNMTX0);
-        GXSetCurrentMtx(GX_PNMTX0);
-        selectTexture((Texture*)skyGetSkyTexture(), 0);
-        if (cloudT >= 0.5f) {
-            _gxSetTevColor2(0x80, 0x80, 0xff, 0xff);
-        } else {
-            _gxSetTevColor2(0x80, 0x80, 0xff, (int)(2.0f * (255.0f * cloudT)));
+        PSMTXMultVec(viewMtx,&pos,&pos);
+        PSMTXTrans(mtx,pos.x,pos.y,pos.z);
+        float rect[4],uv[4]={0,0,1,1};unsigned clip[4];
+        unsigned rgba=fh_pica_cloud_glare_parameters(cloudT,gCloudActionGlareQuadSize[0],rect);
+        GXGetScissor(clip,clip+1,clip+2,clip+3);
+        fh_pica_hud_projected(fh_pica_hud_page(skyGetSkyTexture()),
+            (const float(*)[4])Camera_GetProjectionMatrix(),(const float(*)[4])mtx,
+            rect,0,uv,rgba,1,1,clip);
+        fh_pica_hud_flush(); /* Preserve ordering before the lower cloud model. */
+        fh_pica_cloud_glare_draws++;
         }
-        if (getHudHiddenFrameCount() == 0) {
-            gCloudActionGlareQuadSize[0] = randomGetRange(0x1f40, 0x2ee0);
-        }
-        GXBegin(GX_QUADS, GX_VTXFMT2, 4);
-        c0 = 0.0f;
-        c1 = 1.0f;
-        v = -gCloudActionGlareQuadSize[0];
-        GXPos3f32(v, v, c0);
-        GXTex2f32(c0, c0);
-        v = -gCloudActionGlareQuadSize[0];
-        GXPos3f32(gCloudActionGlareQuadSize[0], v, c0);
-        GXTex2f32(c1, c0);
-        v = gCloudActionGlareQuadSize[0];
-        GXPos3f32(gCloudActionGlareQuadSize[0], v, c0);
-        GXTex2f32(c1, c1);
-        v = gCloudActionGlareQuadSize[0];
-        GXPos3f32(-v, v, c0);
-        GXTex2f32(c0, c1);
     }
 
     if (gCloudActionRuntime.lowerCloudObj != NULL) {
@@ -286,7 +283,9 @@ void renderClouds(int a, int b, int c, int d) {
             gCloudActionRuntime.lowerCloudObj->anim.localPosY = view->y;
             gCloudActionRuntime.lowerCloudObj->anim.localPosZ = view->z;
         }
+        fh_pica_cloud_mode=fh_depth?2:1;
         objRender(a, b, c, d, gCloudActionRuntime.lowerCloudObj, 1);
+        fh_pica_cloud_mode=0;
     }
 }
 

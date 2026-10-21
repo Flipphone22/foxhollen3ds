@@ -1,3 +1,7 @@
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
 #include "main/dll/partfx_interface.h"
 #include "dolphin/os.h"
 #include "main/audio/stream.h"
@@ -887,6 +891,7 @@ void init(void)
         waitNextFrame();
         GXFlush_(1, 0);
     }
+    fh_pica_game_hud_loading_done();
     mmSetFreeDelay(delay);
     testAndSet_onlyUseHeap3(1);
     videoBlackScreenForFrames(5);

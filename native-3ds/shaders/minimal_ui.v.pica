@@ -1,0 +1,21 @@
+; Unskinned orthographic UI. Positions already include LCD rotation.
+; Keep startup independent of model palettes, lighting and fixed attributes.
+.fvec uvscale, maskscale
+.constf constants(0.0,1.0,0.0,0.0)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0
+.out outmask texcoord1
+.proc main
+    mov outpos, v0
+    mov outcolor, v1
+    mul r0.xy, uvscale, v2
+    mov outuv.x, r0.x
+    add outuv.y, constants.y, -r0.y
+    mov outuv.zw, constants.xxxy
+    mul r1.xy, maskscale, v2
+    mov outmask.x, r1.x
+    add outmask.y, constants.y, -r1.y
+    mov outmask.zw, constants.xxxy
+    end
+.end

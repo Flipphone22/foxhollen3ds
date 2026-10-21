@@ -1,3 +1,12 @@
+#include "fh_pica_morph.h"
+#include "fh_pica_model.h"
+#include "fh_minimal_graphics.h"
+#include "fh_platform.h"
+#include <stdio.h>
+#include "main/rcp_dolphin_render.h"
+#include "fh_native_scene.h"
+extern int fh_model_geometry_callback_safe(const void*);
+#include "fh_model_resources.h"
 #include "main/asset_load.h"
 #include "dolphin/mtx.h"
 #include "track/intersect_texture.h"
@@ -146,7 +155,8 @@ void modelApplyBoneTransform(u8* p, u8* out, u16 n, u8** pd, u8** pe, int f, u16
         }
         else
         {
-            *(u32*)out = *(u32*)p;
+            *(u16*)out = *(u16*)p;
+            *(u16*)(out + 2) = *(u16*)(p + 2);
             *(u16*)(out + 4) = *(s16*)(p + 4);
         }
         p += 6;
@@ -818,6 +828,49 @@ static inline void* modelGetBoneMtx(ObjModel* model, int idx)
     return base + joint * sizeof(ObjModelJointMatrix);
 }
 
+static void fh_register_model_instance(ObjModel* instance, size_t bytes) {
+    if (!fh_model_resources_mode) return;
+    ModelFileHeader* file = instance->file;
+    FhModelResourceRange spans[3] = {
+        {instance->vtxBuf[0], file->vertexCount * 6u},
+        {instance->vtxBuf[1], file->vertexCount * 6u},
+        {instance->normalBuf, file->normalCount * ((file->flags24 & 8) ? 9u : 3u)}
+    };
+    unsigned count = 0;
+    uintptr_t first = (uintptr_t)instance;
+    for (unsigned i = 0; i < 3; i++) {
+        uintptr_t address = (uintptr_t)spans[i].data;
+        /* File aliases retain their own allocation owner. Never extend an
+         * instance's declaration to cover unrelated external storage. */
+        if (address >= first && address - first < bytes && spans[i].bytes)
+            spans[count++] = spans[i];
+    }
+    if (count) fh_model_resources_register(instance, bytes, spans, count);
+}
+
+
+static void fh_pica_attach_morph(ObjModel *instance) {
+    ModelFileHeader *h=instance->file;
+    if(!h->morphTargetCount)return;
+    if(!h->vertexCount || h->vertexCount>8191 || !h->morphTargetPtrs)
+        fh_platform_panic("Native morph source table");
+    unsigned char mask[1024]={0};
+    /* Load-time union only. Per-frame native publication never reads targets. */
+    for(unsigned t=0;t<h->morphTargetCount;t++){
+        const u8 *p=h->morphTargetPtrs[t];unsigned last=~0u;
+        if(!p)fh_platform_panic("Native morph source stream");
+        for(unsigned n=0;;n++){
+            unsigned flags=fhReadBE16(p),v=flags&8191;p+=2;
+            if(v>=h->vertexCount)break;
+            if(n>=h->vertexCount || (last!=~0u && v<=last))fh_platform_panic("Native morph source ordering");
+            last=v;unsigned changed=0;
+            for(unsigned bit=0x2000;bit<=0x8000;bit<<=1)if(flags&bit){changed|=fhReadBE16(p);p+=2;}
+            if(changed)mask[v>>3]|=1u<<(v&7);
+        }
+    }
+    fh_pica_morph_attach(instance,h,instance->jointMatrices[0],instance->jointMatrices[1],mask,h->vertexCount);
+}
+
 void* modelLoad_layoutBuffers(u8* p, int b, int isType1, u8* c)
 {
     int o2;
@@ -1005,6 +1058,8 @@ void* modelLoad_layoutBuffers(u8* p, int b, int isType1, u8* c)
     ((ObjModel*)out2)->renderAttachment = NULL;
     ((ObjModel*)out2)->file = (ModelFileHeader*)p;
     ((ObjModel*)out2)->vtxBufDirty = 0;
+    fh_register_model_instance((ObjModel*)out2, pos - (uintptr_t)out2);
+    fh_pica_attach_morph((ObjModel*)out2);
     return out2;
 }
 
@@ -1120,6 +1175,8 @@ static void modelChainUpdateNodes(ObjModel* model, ModelFileHeader* file, ObjMod
         work.z = entry->nodes[i - 1].localOffset.z;
         if (callback != NULL)
         {
+            fh_model_resources_escape(file);
+            fh_model_resources_escape(model);
             callback(file, model, (f32*)&work, callbackArg, i, chain->phase);
         }
         PSVECAdd(&work, &entry->nodes[i].localOffset, &work);
@@ -1725,6 +1782,7 @@ void ObjModel_ApplyBlendChannels(ObjModel* model)
                 eased *= -1.0f;
             }
             dstVtx = model->vtxBuf[(model->bufferFlags >> 1) & 1];
+            fh_model_resources_write_begin(dstVtx, ALIGN_NEXT(hdr->vertexCount * 6u, 32));
             modelApplyBoneTransforms(srcVtx, dstVtx, hdr->vertexCount, targetA, targetB,
                                      (int)(65536.0f * eased));
             model->vtxBufDirty = 1;
@@ -2176,6 +2234,7 @@ Texture* ObjModel_GetTexture(ModelFileHeader* model, int textureIndex)
 
 s16* ObjModel_GetBaseVertexCoords(ModelFileHeader* modelFile, int vertexIndex)
 {
+    fh_model_resources_escape(modelFile);
     return (s16*)(modelFile->vertices + vertexIndex * 6);
 }
 
@@ -2215,11 +2274,14 @@ void ObjModel_EnableDefaultRenderCallback(void* object, ObjModel* model, f32* mt
 
 s16* ObjModel_GetCurrentVertexCoords(ObjModel* model, int vertexIndex)
 {
+    fh_model_resources_escape(model->file);
+    fh_model_resources_escape(model);
     return (s16*)(model->vtxBuf[(model->bufferFlags >> 1) & 1] + vertexIndex * 6);
 }
 
 void* ObjModel_GetPostRenderCallback(ObjModel* model)
 {
+    if (model->postRenderCallback) { fh_model_resources_escape(model->file); fh_model_resources_escape(model); }
     return model->postRenderCallback;
 }
 
@@ -2238,6 +2300,7 @@ void ObjModel_SetPostRenderCallback(ObjModel* model, void* callback)
 
 void* ObjModel_GetRenderCallback(ObjModel* model)
 {
+    if (fh_model_resources_mode && !fh_model_geometry_callback_safe(model->renderCallback)) { fh_model_resources_escape(model->file); fh_model_resources_escape(model); }
     return model->renderCallback;
 }
 
@@ -2855,7 +2918,7 @@ static void modelUnpackFileData(u8* base, u8* gc, u32 pad, u32 texTabOff, u32 mo
             dOff = fhSwap32(*(u32*)p);
             dSize = fhReadBE16(p + 4);
             *(u32*)p = dOff + pad;
-            *(u16*)(p + 8) = dSize;
+            *(u16*)(p + offsetof(ModelDisplayListEntry, dlistSize)) = dSize;
         }
     }
     hdr->instrs = (u8*)(uintptr_t)modelFileOffsetAt(gc, 0xd4, pad);
@@ -2895,12 +2958,17 @@ void* ObjModel_LoadModelData(int id)
     amapSize = modelGetAmapSize(id, amapFlag, animCount);
     tmp = mmAlloc(dataLen, 9, 0);
     loadAndDecompressDataFile(MLDF_FILEID_MODELS_BIN_A, tmp, fileOffset, dataLen, 0, id, 0);
+    extern void fh_model_lod_prepare(void*, unsigned, unsigned);
+    fh_model_lod_prepare(tmp, dataLen, id);
     texTabOff = ALIGN_NEXT((u32)sizeof(ModelFileHeader), 16);
     morphTabOff = texTabOff + tmp[0xf2] * (u32)sizeof(uintptr_t);
     shaderTabOff = ALIGN_NEXT(morphTabOff + tmp[0xf9] * (u32)sizeof(uintptr_t), 16);
     pad = ALIGN_NEXT(shaderTabOff + tmp[0xf8] * (u32)sizeof(Shader), 16);
     model = (u8*)(((uintptr_t)mmAlloc(pad + dataLen + amapSize + 0x1f4, 9, 0) + 0xF) & ~(uintptr_t)0xF);
     memcpy(model + pad, tmp, dataLen);
+    extern void fh_native_model_register(const void*, const void*, unsigned, unsigned);
+    fh_native_model_register(model, tmp, dataLen, id);
+    fh_native_scene_register(model, tmp, dataLen, id);
     mm_free(tmp);
     modelUnpackFileData(model, model + pad, pad, texTabOff, morphTabOff, shaderTabOff);
     ((ModelFileHeader*)model)->headerSize = headerSize;
@@ -2999,6 +3067,187 @@ void* ObjModel_LoadAnimData(u8* p, int b, u8* c)
     return m;
 }
 
+static void fh_register_model_geometry(ModelFileHeader* header) {
+    if (!fh_model_resources_mode) return;
+    unsigned lists = (unsigned)header->displayListCount + header->shadowDisplayListCount;
+    if (lists > 256) return;
+    FhModelResourceRange spans[260] = {
+        {header->vertices, header->vertexCount * 6u},
+        {header->normals, header->normalCount * ((header->flags24 & 8) ? 9u : 3u)},
+        {header->colors, header->colorCount * 2u},
+        {header->texCoords, header->texCoordCount * 4u}
+    };
+    for (unsigned i = 0; i < lists; i++) {
+        ModelDisplayListEntry* list = modelFileGetDisplayList((u8*)header, i);
+        spans[4+i] = (FhModelResourceRange){list->dlist, list->dlistSize};
+    }
+    fh_model_resources_register(header, header->dataSize, spans, 4+lists);
+    extern void fh_native_model_seal(const void*, const FhModelResourceRange*, unsigned, const void*, unsigned);
+    fh_native_model_seal(header, spans, header->displayListCount, header->instrs, header->instrsBitLenWords);
+}
+
+
+#include "fh_native_actor_fog_owner.h"
+#include "fh_asset_paths.h"
+#include "fh_graphics_options.h"
+extern unsigned char lbl_803DB5E8;
+#include "fh_pica_actor_fog_draw.h"
+#include "fh_pica_specular.h"
+#include "fh_pica_fur.h"
+#include "fh_pica_actor_alpha_source.h"
+#include "fh_pica_actor_unlit.h"
+static unsigned fh_pica_actor_solid_color(const Shader* sh) {
+    /* addShaderLayerStages' untextured KColor branch. Other untextured
+     * families retain their vertex/object colour semantics. */
+    return sh->layerCount==1 && !sh->layers[0].texture &&
+        (sh->reg1Texture || (sh->pad00[0]==255 && sh->pad00[1]==255 && sh->pad00[2]==255));
+}
+
+
+static void fh_pica_actor_load_materials(ModelFileHeader* header) {
+    if(!fh_pica_scene_actors)return;
+    const FhSceneAsset* asset=fh_native_scene_find(header);
+    const FhPicaModelPlan* plan=asset?fh_native_scene_pica_model(asset):NULL;
+    /* Some resources supply collision/animation only and have no prepared
+     * draws. Keep their game load intact. An attempted native draw still
+     * fails the explicit actor coverage gate; it never silently falls back. */
+    if(!plan) {
+        char line[192];snprintf(line,sizeof(line),"PICA actor resource without plan: model=%u asset=%u shaders=%u lists=%u vertices=%u\n",header->modelId,asset?asset->id:0,header->renderOpCount,header->displayListCount,header->vertexCount);
+        fh_platform_log(line);return;
+    }
+    if(header->renderOpCount>64)fh_platform_panic("PICA actor material plan");
+    if(!fh_pica_materials_begin(asset,header->renderOpCount)) {
+        char line[160];snprintf(line,sizeof(line),"PICA actor materials declined: model=%u asset=%u shaders=%u\n",header->modelId,asset->id,header->renderOpCount);
+        fh_platform_log(line);return;
+    }
+    unsigned used[64]={0};
+    for(unsigned i=0;i<plan->count;i++) {
+        if(plan->draw[i].material>=header->renderOpCount)fh_platform_panic("PICA actor material index");
+        used[plan->draw[i].material]=1;
+    }
+    unsigned layered=0,masked_count=0,restored=0,specular_count=0,specular_partial=0;
+    for(unsigned i=0;i<header->renderOpCount;i++)if(used[i]) {
+        Shader* sh=header->renderOps+i;
+        Texture* base=sh->layerCount?textureIdxToPtr((uintptr_t)sh->layers[0].texture):NULL;
+        unsigned masked=base && base->imageOffset;
+        Texture* second=sh->layerCount==2?textureIdxToPtr((uintptr_t)sh->layers[1].texture):NULL;
+        unsigned mode=sh->layerCount>1?(sh->layers[0].typeBits&0x7f):1;
+        unsigned dual=asset->compact && base && second && !masked && !second->imageOffset &&
+            mode!=8 && !(sh->flags&SHADER_FLAG_DECAL_LAYER) &&
+            ((sh->layers[0].typeBits&0x80) || !(sh->layers[1].typeBits&0x80));
+        if(dual)for(unsigned j=0;j<plan->count;j++)if(plan->draw[j].material==i && !plan->draw[j].two_uv)
+            fh_platform_panic("PICA actor second UV plan");
+        unsigned count=base?(base->animationFrameCount+255u)/256u:0;
+        if(base && !count)count=1;
+        unsigned second_count=dual?(second->animationFrameCount+255u)/256u:0;
+        if(dual && !second_count)second_count=1;
+        if(!fh_pica_material_begin(asset,i,base?1+(masked||dual):0,count,masked?count:second_count,sh->flags))
+            fh_platform_panic("PICA actor material capacity");
+        for(unsigned k=0;k<count;k++) {
+            Texture* t=textureGetAnimationFrame(base,k<<8);FhTexture image;
+            if(!t || !fh_gx_texture_view(textureGetGXTexObj(t),&image) ||
+                !fh_pica_material_frame(asset,i,0,k,&image)){char line[160];snprintf(line,sizeof(line),"PICA actor images declined: model=%u asset=%u material=%u\\n",header->modelId,asset->id,i);fh_platform_log(line);fh_pica_materials_release(fh_native_scene_pica_materials(asset));return;}
+            if(masked) {
+                GXTexObj mask;
+                if(!t->imageOffset)fh_platform_panic("PICA actor opacity frame");
+                textureInitSecondaryGXTexObj(t,&mask);
+                if(!fh_gx_texture_view(&mask,&image) ||
+                    !fh_pica_material_frame(asset,i,1,k,&image)){char line[160];snprintf(line,sizeof(line),"PICA actor images declined: model=%u asset=%u material=%u\\n",header->modelId,asset->id,i);fh_platform_log(line);fh_pica_materials_release(fh_native_scene_pica_materials(asset));return;}
+            }
+        }
+        for(unsigned k=0;k<second_count;k++) {
+            Texture* t=textureGetAnimationFrame(second,k<<8);FhTexture image;
+            if(!t || t->imageOffset || !fh_gx_texture_view(textureGetGXTexObj(t),&image) ||
+                !fh_pica_material_frame(asset,i,1,k,&image)){char line[160];snprintf(line,sizeof(line),"PICA actor images declined: model=%u asset=%u material=%u\\n",header->modelId,asset->id,i);fh_platform_log(line);fh_pica_materials_release(fh_native_scene_pica_materials(asset));return;}
+        }
+        if((sh->flags&0x200) && sh->indTexture){
+            Texture *mask=textureIdxToPtr((uintptr_t)sh->indTexture);FhTexture image;
+            if(!mask || !fh_gx_texture_view(textureGetGXTexObj(mask),&image))fh_platform_panic("PICA fur coverage image");
+            if(!fh_pica_material_fur_mask(asset,i,&image)){
+                char line[128];snprintf(line,sizeof(line),"PICA fur coverage declined: asset=%u material=%u\n",asset->id,i);fh_platform_log(line);
+            }
+        }
+        if(!fh_pica_material_actor(asset,i,masked))fh_platform_panic("PICA actor combiner");
+        if(!fh_pica_material_actor_alpha_source(asset,i,
+            fh_pica_actor_constant_alpha(sh->reg1Texture!=NULL,
+                sh->pad00[0],sh->pad00[1],sh->pad00[2],sh->vtxAttrFlags)))
+            fh_platform_panic("PICA actor alpha source");
+        if(!fh_pica_material_actor_raster(asset,i,header->flags))fh_platform_panic("PICA actor raster plan");
+        if(fh_pica_actor_solid_color(sh) &&
+           !fh_pica_material_actor_solid(asset,i,sh->reg1Texture!=NULL))
+            fh_platform_panic("PICA actor solid combiner");
+        if(dual) {
+            /* KAlpha/Swizzled source paths interpolate for all secondary
+             * modes. Unlit vertex-color stages additionally use ADD/MODULATE.
+             * Lighting integration must preserve this distinction. */
+            unsigned regular=(sh->vtxAttrFlags&0x10) &&
+                !(sh->pad00[0]==255 && sh->pad00[1]==255 && sh->pad00[2]==255) &&
+                !((header->shaderFlags&2) && !(header->flags24&2));
+            if(mode!=0 && (!regular || (mode!=4 && mode!=6)))mode=1;
+            /* addShaderLayerStages defers lighting when both layers precede
+             * it (two typeBits 0x80 entries). Eye overlays must be lit too. */
+            unsigned light_after=(sh->reg1Texture || sh->reg2Texture) && (sh->layers[0].typeBits&0x80) && (sh->layers[1].typeBits&0x80);
+            if(!fh_pica_material_actor_layered(asset,i,mode,light_after))fh_platform_panic("PICA actor layer combiner");
+            restored++;
+        }
+        layered+=(sh->layerCount>1 && !dual);masked_count+=masked;
+        if(!fh_pica_material_actor_unlit(asset,i,
+            fh_pica_actor_unlit_texture(sh->reg1Texture!=NULL,sh->reg2Texture!=NULL,
+                sh->pad00[0],sh->pad00[1],sh->pad00[2])))
+            fh_platform_panic("PICA actor unlit source");
+        if(!fh_pica_material_environment_compile(asset,i,sh->reg1Texture!=NULL))
+            fh_platform_panic("PICA actor environment combiner");
+        if(sh->reg2Texture) {
+            /* Remaining layered/bump families need distinct native
+             * plans. Keep their source geometry/base images, count omission. */
+            unsigned admitted=(sh->layerCount==1 || dual) && base && !sh->auxTexture &&
+                (sh->layers[0].typeBits&0x80) && !(sh->flags&SHADER_FLAG_PROJECTED_TEX_PASS);
+            if(admitted && fh_pica_material_specular_compile(asset,i,sh->reg2TexSlot,sh->unk1C?sh->reg2Alpha:0,sh->textureId && !sh->unk1C))specular_count++;
+            else specular_partial++;
+        }
+
+        unsigned white=sh->pad00[0]==255 && sh->pad00[1]==255 && sh->pad00[2]==255;
+        unsigned override=(header->shaderFlags&2) && !(header->flags24&2);
+        unsigned swizzled=sh->reg1Texture || white || (override && !(sh->vtxAttrFlags&0x10));
+        if(!fh_pica_material_swizzle_compile(asset,i,swizzled,
+            sh->layerCount==1 && !sh->auxTexture &&
+            !(sh->flags&(SHADER_FLAG_DECAL_LAYER|SHADER_FLAG_PROJECTED_TEX_PASS))))
+            fh_platform_panic("PICA texture channel program");
+
+    }
+    /* Compile the child material programs once, after base/layer/special
+     * programs have resolved. Binding never compiles; an unprepared family
+     * remains the ordinary native actor. No packet means no extra programs. */
+    /* Match the static rejection in game_live before file IO/residency.
+     * Dynamic callbacks/dirty vertices remain checked at the live draw. */
+    if((fh_graphics_options&FH_GRAPHICS_HEIGHT_FOG) &&
+       !(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_ACTORS)) &&
+       !(header->flags&0x100) && header->jointCount &&
+       !header->vertexAnimEntries && !header->morphTargetCount){
+        unsigned capable=0;
+        for(unsigned i=0;i<header->renderOpCount;i++)if(used[i])
+            capable+=fh_pica_material_actor_height_capable(&plan->materials,i)!=0;
+        const char* path=fh_asset_path(FH_ASSET_ACTOR_FOG);
+        if(capable && path){
+            unsigned bump=lbl_803DB5E8&1;
+            {
+                int loaded=fh_native_scene_actor_fog_archive(asset,path,bump);
+                char line[128];snprintf(line,sizeof(line),"Actor fog archive id=%u resident=%d bump=%u\n",asset->id,loaded,bump);
+                fh_platform_log(line);
+            }
+        }
+    }
+    if(fh_native_scene_actor_fog_generation(asset)){
+        unsigned prepared=0;
+        for(unsigned i=0;i<header->renderOpCount;i++)if(used[i])
+            prepared+=fh_pica_material_actor_height_prepare(&plan->materials,i)!=0;
+        if(prepared)fh_pica_scene_actor_fog_init();
+    }
+    char line[192];snprintf(line,sizeof(line),"PICA actor materials: asset=%u shaders=%u masked=%u omitted_extra_layers=%u dual_uv=%u\n",asset->id,header->renderOpCount,masked_count,layered,restored);
+    fh_platform_log(line);
+    snprintf(line,sizeof(line),"PICA specular load: asset=%u admitted=%u partial=%u\n",asset->id,specular_count,specular_partial);fh_platform_log(line);
+}
+
 void* ObjModel_Load(int id, int loadFlag, int* outSize)
 {
     int sizes[7];
@@ -3036,8 +3285,10 @@ void* ObjModel_Load(int id, int loadFlag, int* outSize)
             ids[i[0]] = (uintptr_t)tex;
         }
         ObjModel_ResolveRenderOpTextures(header);
+        fh_pica_actor_load_materials((ModelFileHeader*)header);
         modelLoadAnimations(header, realId[0], header + ((ModelFileHeader*)header)->dataSize);
         modelInitModelList(gModelList, realId[0], &header);
+        fh_register_model_geometry((ModelFileHeader*)header);
     }
     else
     {
@@ -3109,92 +3360,23 @@ void ObjModel_InitRenderBuffers(void)
 
 void ObjModel_BlendNormalStream(u8* mtxs, ModelFileHeader* model, u8* animData, u8** outs, int quad)
 {
-    u16 chunkWords[2];
-    u8* chunks = model->blendAnimEntriesRaw;
-    u16 chunkCount = model->blendAnimCount;
-
-    setGQR7Packed(model->unkB0[2], 6, model->unkB0[2], 6);
+    /* PICA owns render normals. Preserve shared quantization/scratch state;
+     * positions, animation, morph channels and hit volumes are independent. */
+    (void)mtxs;(void)animData;(void)outs;(void)quad;
+    setGQR7Packed(model->unkB0[2],6,model->unkB0[2],6);
     ObjModel_InitScratchBuffers();
-    if (chunkCount != 0)
-    {
-        u8* chunk;
-        int vtxWords;
-        int weightWords;
-        u32 i;
-        u32 nextSlot;
-        u8* chunkDst;
-        u8* lastChunk;
+    fh_pica_cpu_normal_calls_avoided++;
+    fh_pica_cpu_normal_groups_avoided+=model->blendAnimCount;
 
-        chunk = chunks;
-        vtxWords = (u32)((chunk[0x73] << 5) + 0x1f) >> 5;
-        copyToCache(gModelCacheBuffersA[0], animData + *(int*)(chunk + 0x60), vtxWords);
-        chunkWords[0] = vtxWords;
-        weightWords = (u32)(((chunk = chunks)[0x6f] << 5) + 0x1f) >> 5;
-        copyToCache(gModelCacheBuffersA[1], *(u8**)(chunk + 0x64), weightWords);
-        for (i = 0; i < (u32)(chunkCount - 1); i++)
-        {
-            int nextVtxWords;
-
-            chunk = chunks + i * 0x74;
-            nextVtxWords = (u32)((chunk[0xe7] << 5) + 0x1f) >> 5;
-            nextSlot = (i + 1) & 1;
-            copyToCache(gModelCacheBuffersA[(u8)(nextSlot * 2)], animData + *(int*)(chunk + 0xd4), nextVtxWords);
-            chunkWords[(i + 1) & 1] = nextVtxWords;
-            {
-                u8* nextChunk;
-                int nextWeightWords = (u32)(((nextChunk = chunks + i * 0x74)[0xe3] << 5) + 0x1f) >> 5;
-                copyToCache(gModelCacheBuffersA[(u8)((u8)(nextSlot * 2) + 1)], *(u8**)(nextChunk + 0xd8), nextWeightWords);
-            }
-            cacheQueueWait(2);
-            if ((u8)quad)
-            {
-                chunkDst = outs[i];
-                ObjModel_TransformQuadVerticesLinear(mtxs + chunk[0x6c] * 0x30, mtxs + chunk[0x6d] * 0x30,
-                                                     gModelCacheBuffersA[(u8)((i & 1) * 2) + 1],
-                                                     gModelCacheBuffersA[(u8)((i & 1) * 2)] + chunk[0x72],
-                                                     gModelCacheBuffersA[(u8)((i & 1) * 2)] + chunk[0x72],
-                                                     *(u16*)(chunk + 0x70));
-                memcpyToCache(chunkDst, gModelCacheBuffersA[(u8)((i & 1) * 2)], chunkWords[i & 1]);
-            }
-            else
-            {
-                chunkDst = outs[i];
-                ObjModel_TransformVerticesLinear(mtxs + chunk[0x6c] * 0x30, mtxs + chunk[0x6d] * 0x30,
-                                                 gModelCacheBuffersA[(u8)((i & 1) * 2) + 1],
-                                                 gModelCacheBuffersA[(u8)((i & 1) * 2)] + chunk[0x72],
-                                                 gModelCacheBuffersA[(u8)((i & 1) * 2)] + chunk[0x72],
-                                                 *(u16*)(chunk + 0x70));
-                memcpyToCache(chunkDst, gModelCacheBuffersA[(u8)((i & 1) * 2)], chunkWords[i & 1]);
-            }
-        }
-        lastChunk = chunks + i * 0x74;
-        cacheQueueWait(0);
-        if ((u8)quad)
-        {
-            chunkDst = outs[i];
-            ObjModel_TransformQuadVerticesLinear(mtxs + lastChunk[0x6c] * 0x30, mtxs + lastChunk[0x6d] * 0x30,
-                                                 gModelCacheBuffersA[(u8)((i & 1) * 2) + 1],
-                                                 gModelCacheBuffersA[(u8)((i & 1) * 2)] + lastChunk[0x72],
-                                                 gModelCacheBuffersA[(u8)((i & 1) * 2)] + lastChunk[0x72],
-                                                 *(u16*)(lastChunk + 0x70));
-            memcpyToCache(chunkDst, gModelCacheBuffersA[(u8)((i & 1) * 2)], chunkWords[i & 1]);
-        }
-        else
-        {
-            chunkDst = outs[i];
-            ObjModel_TransformVerticesLinear(mtxs + lastChunk[0x6c] * 0x30, mtxs + lastChunk[0x6d] * 0x30,
-                                             gModelCacheBuffersA[(u8)((i & 1) * 2) + 1],
-                                             gModelCacheBuffersA[(u8)((i & 1) * 2)] + lastChunk[0x72],
-                                             gModelCacheBuffersA[(u8)((i & 1) * 2)] + lastChunk[0x72],
-                                             *(u16*)(lastChunk + 0x70));
-            memcpyToCache(chunkDst, gModelCacheBuffersA[(u8)((i & 1) * 2)], chunkWords[i & 1]);
-        }
-        cacheQueueWait(0);
-    }
 }
 
 void ObjModel_BlendVertexStream(u8* mtxs, ModelFileHeader* model, u8* animData, int* dstOffsets, u8* dstBase)
 {
+    if (fh_model_resources_mode) for (unsigned i = 0; i < model->vertexAnimCount; i++) {
+        const u8* chunk = model->vertexAnimEntriesRaw + i * 0x74;
+        /* Pinned memcpyToCache treats zero words as a 4096-byte transfer. */
+        fh_model_resources_write_begin(dstBase + dstOffsets[i], chunk[0x73] ? (unsigned)chunk[0x73] * 32u : 0x1000u);
+    }
     u16 chunkWords[2];
     u8* chunks = model->vertexAnimEntriesRaw;
     u16 chunkCount = model->vertexAnimCount;
@@ -3428,3 +3610,5 @@ Vec gModelJitterAxis = { 1.0f, 0.0f, 0.0f };
 char sModelAnimationBufferOverflowWarning[] = "Warning: Model animation buffer overflow!! size=%d\n";
 
 u8* gModelCacheBuffersA[4];
+
+const unsigned fh_pica_game_model_draw_stride=sizeof(FhPicaModelDraw);

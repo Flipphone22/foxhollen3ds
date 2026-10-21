@@ -1,3 +1,16 @@
+#include "fh_pica_world_deferred.h"
+extern unsigned fh_hardware_is_new;
+#include "fh_pica_height_fog.h"
+#include "fh_ground_mask.h"
+#include "fh_pica_shadow_project.h"
+#include "fh_graphics_options.h"
+#include "fh_platform.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
+#include "fh_surface_detail.h"
+#include "fh_native_scene.h"
+#include "fh_scene_game.h"
 #include "main/map_block.h"
 #include "main/texture.h"
 #include "track/intersect_depth_state.h"
@@ -455,9 +468,200 @@ static u8 mapBlockBounds_ComputeAndTestPlanes(MapBlockBoundsRec* bounds, struct 
     return 1;
 }
 
-void mapBlockRender_callList(u8 passSelect, u32 visArg, MapBlockData* block, Shader* shader,
-                             ModelRenderInstrsState* state, float* mtx)
+
+static const FhTexture* fh_minimal_base(Shader* shader,FhTexture* out) {
+    if (!shader || !shader->layerCount) return NULL;
+    /* MapBlock_initShaders already resolves layers to real Texture pointers.
+     * Model layers use texture handles. ARM pointers are below INT32_MAX;
+     * feeding a world pointer through textureIdxToPtr discards every image. */
+    Texture* texture=shader->layers[0].texture;
+    return texture && fh_gx_texture_view(textureGetGXTexObj(texture),out) ? out : NULL;
+}
+static const FhSceneAsset* fh_minimal_world_prepare(MapBlockData* block) {
+    const FhSceneAsset* asset=fh_native_scene_find(block);
+    if (!asset) { fh_minimal_missing++; fh_minimal_coverage_failure(16,0,0); return NULL; }
+    unsigned failure=0;
+    if (!asset->block) failure=1;
+    else if (!fh_native_scene_prepare_world_positions(asset,block->vertices,block->vertexCount)) failure=2;
+    else if (!fh_native_scene_source(asset,2,block->vertexColors,block->colorCount*2u)) failure=3;
+    else if (!fh_native_scene_source(asset,3,block->vertexTexCoords,block->texCoordCount*4u)) failure=4;
+    else if (!fh_native_scene_source(asset,4,block->renderInstrsMain,block->nRenderInstrsMain)) failure=5;
+    if (failure) {fh_minimal_rejected++;fh_minimal_coverage_failure(17,asset->id,failure);return NULL;}
+    return asset;
+}
+static Texture* fh_minimal_world_texture(ShaderLayer* layer,float scroll[2]) {
+    Texture* texture=layer->texture;
+    if (layer->materialId) {
+        for (unsigned i=0;i<0x50;i++) {
+            MapTextureOverride* entry=gMapTextureOverrides+i;
+            if (entry->refCount>0 && entry->texture==texture && entry->type==layer->materialId) {
+                texture=textureGetAnimationFrame(texture,entry->frame);break;
+            }
+        }
+    }
+    if (layer->scrollMtx!=0xff) {
+        scroll[0]=gMapTextureScrolls[layer->scrollMtx].offsetX/1048576.0f;
+        scroll[1]=gMapTextureScrolls[layer->scrollMtx].offsetY/1048576.0f;
+    }
+    return texture;
+}
+static FhMinimalWorldFalloff fh_minimal_world_falloff(void) {
+    FhMinimalWorldFalloff out={0};
+    Texture* radial=getNewShadowFalloffTexture();
+    Texture* ramp=getNewShadowInverseRampTexture();
+    GameObject* player=Obj_GetPlayerObject();
+    out.distance=player?Camera_DistanceToCurrentViewPosition(player->anim.worldPosX,
+        player->anim.worldPosY,player->anim.worldPosZ):100.f;
+    if (!radial || !ramp || !fh_gx_texture_view(textureGetGXTexObj(radial),out.texture) ||
+        !fh_gx_texture_view(textureGetGXTexObj(ramp),out.texture+1)) {
+        fh_minimal_rejected++;return out;
+    }
+    out.active=1;return out;
+}
+/* Static world surface plus live texture animation/scroll and ambient colour.
+ * Dynamic lights and deferred falloff remain a separate reconstruction step. */
+static int fh_budget_material(Shader* shader,FhMinimalWorldMaterial* material) {
+    material->layered=shader->layerCount==2 && (shader->layers[1].typeBits&127)==9;
+    memcpy(material->konst,&lbl_803DEBB0,4);
+    for(unsigned i=0;i<(material->layered?2u:(shader->layerCount?1u:0u));i++) {
+        Texture* texture=fh_minimal_world_texture(shader->layers+i,material->scroll[i]);
+        if(texture && !fh_gx_texture_view(textureGetGXTexObj(texture),material->texture+i))return 0;
+    }
+    if(!(shader->flags&0x40000)) {
+        unsigned char ambient[4];
+        if(shader->flags&(1|0x800|0x1000))memcpy(ambient,&gTexShaderAmbColor,4);
+        else objGetSunColor(0,ambient,ambient+1,ambient+2);
+        for(unsigned i=0;i<3;i++)material->raster[i]=ambient[i]/255.f;
+    }
+    return 1;
+}
+/* Deliberately incomplete reconstruction tier: callback-free main world.
+ * Reuse the existing fenced native storage and PICA world submission. */
+static void fh_pica_live_materials(const FhSceneAsset*,MapBlockData*);
+static void fh_budget_world(MapBlockData* block) {
+    if(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_WORLD))return;
+    if(fh_pica_scene_enabled) {
+        const FhSceneAsset* resident=fh_native_scene_find(block);
+        if(!resident || !fh_pica_world_prepare_positions(resident)) {
+            fh_minimal_coverage_failure(27,0,0);return;
+        }
+        float camera[3][4];unsigned clip[4];
+        PSMTXConcat((MtxPtr)Camera_GetViewMatrix(),block->transform,camera);
+        GXGetScissor(clip,clip+1,clip+2,clip+3);
+        fh_pica_live_materials(resident,block);
+        fh_pica_shadow_project_transform(resident,(const float(*)[4])block->transform);
+        fh_pica_scene_world(resident,camera,(const float(*)[4])Camera_GetProjectionMatrix(),clip);return;
+    }
+    const FhSceneAsset* asset=fh_minimal_world_prepare(block);
+    if (!asset) return;
+    const FhWorldDrawPlan* plan=fh_native_scene_world_plan(asset);
+    if (!plan) {fh_minimal_coverage_failure(22,asset->id,0);return;}
+    float view[3][4];
+    PSMTXConcat((MtxPtr)Camera_GetViewMatrix(),block->transform,view);
+    unsigned clip[4];GXGetScissor(clip,clip+1,clip+2,clip+3);
+    fh_minimal_movie_active=0;
+    fh_minimal_world_batch_begin();
+    FhSceneGroup pending={0};
+    FhMinimalWorldMaterial material={.raster={1,1,1,1}};
+    Shader* pending_shader=NULL;
+    unsigned pending_valid=0;
+    for (unsigned i=0;i<plan->commands;i++) {
+        const FhWorldPlanOp* op=plan->command+i;
+        if (op->kind!=2) continue;
+        Shader* shader=block->shaders+op->shader;
+        if (shader->flags&(0x80000000u|2u)) continue;
+        MapBlockBoundsRec* list=block->displayLists+op->value;
+        float minX,minY,minZ,maxX,maxY,maxZ;
+        if (!mapBlockBounds_ComputeAndTestPlanes(list,block,gViewFrustumPlanes,
+            FRUSTUM_PLANE_COUNT,&minX,&minY,&minZ,&maxX,&maxY,&maxZ)) continue;
+        /* Preserve the original main-pass (visArg=0) visibility decision.
+         * Deferred shadow/water passes are intentionally absent in this tier. */
+        if (shader->flags&0x2000u) {
+            if (shader->flags&0x40000000u) continue;
+            if (mapBlockBounds_ComputeAndTestPlanes(list,block,gPlayerRelativeFrustumPlanes,
+                FRUSTUM_PLANE_COUNT,&minX,&minY,&minZ,&maxX,&maxY,&maxZ)) continue;
+        }
+        if (!fh_native_scene_source(asset,5+op->value,list->dlist,list->dlistSize)) {
+            fh_minimal_coverage_failure(23,asset->id,op->value);continue;
+        }
+        FhSceneGroup geometry=plan->draw[op->ordinal];
+        if(!fh_render_budget_textures)geometry.two_uv=0; /* Same vertex stride. */
+        /* Flat stage has no lights/texture/falloff. Only retain flags read by
+         * native raster setup. Join adjacent slices of the same resident group;
+         * no reordering, hidden ranges, geometry copies or ownership changes. */
+        unsigned flags=shader->flags&(0x60000000u|0x480u);
+        if (pending_valid && (!fh_render_budget_textures || pending_shader==shader) &&
+            material.flags==flags && pending.vertex==geometry.vertex &&
+            pending.index+pending.indices==geometry.index && pending.cull==geometry.cull &&
+            pending.format==geometry.format && pending.vertices==geometry.vertices) {
+            pending.indices+=geometry.indices;pending.draws+=geometry.draws;
+        } else {
+            if(pending_valid)fh_minimal_world_group(asset,&pending,view,&material,clip);
+            pending_valid=0;
+            material=(FhMinimalWorldMaterial){.raster={1,1,1,1},.flags=flags};
+            if(fh_render_budget_textures && (!fh_budget_material(shader,&material) ||
+                material.layered!=geometry.two_uv)) {
+                fh_minimal_coverage_failure(24,asset->id,op->shader);continue;
+            }
+            pending=geometry;pending_shader=shader;pending_valid=1;
+        }
+    }
+    if(pending_valid)fh_minimal_world_group(asset,&pending,view,&material,clip);
+    fh_minimal_world_batch_end();
+}
+static void fh_minimal_world_draw(const FhSceneAsset* asset,MapBlockData* block,
+    unsigned ordinal,unsigned list_index,Shader* shader,const float view[3][4],float near_z,unsigned water,unsigned foreground,const FhMinimalWorldLights* lights,const FhMinimalWorldFalloff* falloff,const FhSceneGroup* planned) {
+    if (!asset) return;
+    FhSceneGroup part;
+    unsigned section_list=list_index,section_shader=shader-block->shaders;
+    if (planned) part=*planned;
+    else {
+        unsigned gi;
+        if (!fh_native_scene_draw(asset,ordinal,list_index,section_shader,&gi)) {fh_minimal_rejected++;fh_minimal_coverage_failure(18,asset->id,ordinal);return;}
+        if (gi==65535) {fh_minimal_missing++;fh_minimal_coverage_failure(19,asset->id,ordinal);return;}
+        FhSceneGroup group;FhSceneSection section;
+        fh_native_scene_group(asset,gi,&group);
+        fh_native_scene_section(asset,group.first_section+ordinal-group.first,&section);
+        section_list=section.list;section_shader=section.shader;
+        part=group;part.index+=section.first;part.indices=section.count;part.draws=1;
+    }
+    if (section_list>=block->displayListCount || section_shader>=block->shaderCount) {fh_minimal_rejected++;return;}
+    MapBlockBoundsRec* list=block->displayLists+section_list;
+    if (!fh_native_scene_source(asset,5+section_list,list->dlist,list->dlistSize)) {fh_minimal_rejected++;fh_minimal_coverage_failure(20,asset->id,section_list);return;}
+            unsigned scissor[4];GXGetScissor(scissor,scissor+1,scissor+2,scissor+3);
+            if (water) { fh_minimal_water_group(asset,&part,view,scissor);return; }
+            if (fh_minimal_movie_active) {
+                const float pose[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+                fh_minimal_group(asset,&part,pose,1,view,1,NULL,NULL,0,shader->flags,0,NULL,scissor,NULL,NULL);
+                return;
+            }
+            FhMinimalWorldMaterial material={.flags=shader->flags,.raster={1,1,1,1},.near_z=near_z};
+            material.lighting=*lights;material.falloff=*falloff;
+            if (foreground && (shader->flags&0x2000)) material.flags|=0x40000000u;
+            material.layered=shader->layerCount==2 && (shader->layers[1].typeBits&127)==9;
+            if (material.layered!=part.two_uv) { fh_minimal_rejected++;fh_minimal_coverage_failure(21,asset->id,section_shader);return; }
+            memcpy(material.konst,&lbl_803DEBB0,4);
+            for (unsigned i=0;i<(material.layered?2u:(shader->layerCount?1u:0u));i++) {
+                Texture* texture=fh_minimal_world_texture(shader->layers+i,material.scroll[i]);
+                if (texture && !fh_gx_texture_view(textureGetGXTexObj(texture),material.texture+i)) {
+                    fh_minimal_rejected++;return;
+                }
+            }
+            if (!(shader->flags&0x40000)) {
+                unsigned char ambient[4];
+                if (shader->flags&(1|0x800|0x1000)) memcpy(ambient,&gTexShaderAmbColor,4);
+                else objGetSunColor(0,ambient,ambient+1,ambient+2);
+                for (unsigned i=0;i<3;i++) material.raster[i]=ambient[i]/255.f;
+            }
+            fh_minimal_world_group(asset,&part,view,&material,scissor);
+}
+
+static void fh_mapBlockRender_callList(u8 passSelect, u32 visArg, MapBlockData* block, Shader* shader,
+                             ModelRenderInstrsState* state, float* mtx,
+                             const FhSceneAsset* native_asset, unsigned native_ordinal,const FhWorldPlanOp* planned_op,const FhSceneGroup* planned_group)
 {
+    FhMinimalWorldLights native_lights={0};
+    FhMinimalWorldFalloff native_falloff={0};
     int lightPos[3];
     int count;
     float minX;
@@ -481,6 +685,10 @@ void mapBlockRender_callList(u8 passSelect, u32 visArg, MapBlockData* block, Sha
 
         texGlobals = gLightmapDrawQueue;
         bitPos = state->bit;
+        if (planned_op) {
+            state->bit=bitPos+8;
+            bounds[0]=block->displayLists+planned_op->value;
+        } else {
         {
             int off = bitPos >> 3;
             byteBase = state->instrs;
@@ -491,6 +699,8 @@ void mapBlockRender_callList(u8 passSelect, u32 visArg, MapBlockData* block, Sha
         }
         state->bit = bitPos + 8;
         bounds[0] = &block->displayLists[(bits >> (bitPos & 7)) & 0xff];
+        if (fh_render_budget_strip) return;
+        }
         if ((shader != NULL) && ((SHADER_FLAGS(shader) & 2) != 0))
         {
             return;
@@ -539,6 +749,19 @@ void mapBlockRender_callList(u8 passSelect, u32 visArg, MapBlockData* block, Sha
                             minX + playerMapOffsetX, minY, minZ + playerMapOffsetZ, maxX + playerMapOffsetX, maxY,
                             maxZ + playerMapOffsetZ, gTexBlockLightList, 2, &count);
                     }
+                    if (fh_minimal_enabled) {
+                        native_lights.count=count;
+                        native_lights.mode=(flags&0x800)?1:(flags&0x1000)?2:0;
+                        if (native_lights.mode) ObjSeq_copyDefaultColor(&chanColor);
+                        for (i=0;i<count;i++) {
+                            FhMinimalWorldLight* light=native_lights.light+i;
+                            modelLightStruct_getDiffuseColor(gTexBlockLightList[i],light->color,
+                                light->color+1,light->color+2,light->color+3);
+                            modelLightStruct_getPosition(gTexBlockLightList[i],light->position,
+                                light->position+1,light->position+2);
+                            light->radius=modelLightStruct_getRadius(gTexBlockLightList[i]);
+                        }
+                    } else {
                     if ((shader != NULL) &&
                         (((SHADER_FLAGS(shader) & 0x800) != 0 || ((SHADER_FLAGS(shader) & 0x1000) != 0))))
                     {
@@ -597,6 +820,7 @@ void mapBlockRender_callList(u8 passSelect, u32 visArg, MapBlockData* block, Sha
                                         (int*)lightColor, (f32*)&lightPos[0]);
                         }
                     }
+                    }
                     if ((shader != NULL) && ((SHADER_FLAGS(shader) & 0x2000) != 0))
                     {
                         if ((shader != NULL) && ((SHADER_FLAGS(shader) & 0x40000000) != 0))
@@ -628,11 +852,32 @@ void mapBlockRender_callList(u8 passSelect, u32 visArg, MapBlockData* block, Sha
                         {
                             return;
                         }
-                        addShadowFalloffTevStages();
+                        if (fh_minimal_enabled) native_falloff=fh_minimal_world_falloff();
+                        else addShadowFalloffTevStages();
                     }
                     Rcp_ApplyTextureStageCounts();
                 }
             }
+        if (fh_minimal_enabled) {
+            unsigned stream=state->instrs==block->renderInstrsTransp?1:
+                state->instrs==block->renderInstrsWater?2:0;
+            const FhSceneAsset* asset=native_asset;
+            unsigned ordinal,list=bounds[0]-block->displayLists;
+            /* Main and queued draws share the original visibility boundary.
+             * The queued draw selects by its exact original stream bit,
+             * not by list identity: repeated lists can use different layouts. */
+            if (asset && stream==0) {
+                fh_minimal_world_draw(asset,block,native_ordinal,list,shader,(const float(*)[4])mtx,0,0,visArg,&native_lights,&native_falloff,planned_group);
+            } else {
+                asset=fh_minimal_world_prepare(block);
+                if (asset && (stream==0 || fh_native_scene_source(asset,5+block->displayListCount+(stream==2),
+                    stream==2?block->renderInstrsWater:block->renderInstrsTransp,
+                    stream==2?block->nRenderInstrsWater:block->nRenderInstrsTransp)) &&
+                fh_native_scene_stream_draw(asset,stream,bitPos,list,shader-block->shaders,&ordinal))
+                    fh_minimal_world_draw(asset,block,ordinal,list,shader,(const float(*)[4])mtx,stream==1?-.01f:0,stream==2,visArg,&native_lights,&native_falloff,NULL);
+                else fh_minimal_missing++;
+            }
+        }
             GXCallDisplayList(bounds[0]->dlist, bounds[0]->dlistSize);
             flags = SHADER_FLAGS(shader);
             if ((((flags & 0x4000) != 0) || ((flags & 0x8000) != 0) || ((flags & 0x10000) != 0)) &&
@@ -648,9 +893,26 @@ void mapBlockRender_callList(u8 passSelect, u32 visArg, MapBlockData* block, Sha
         }
     }
 }
+void mapBlockRender_callList(u8 passSelect, u32 visArg, MapBlockData* block, Shader* shader,
+                             ModelRenderInstrsState* state, float* mtx) {
+    fh_mapBlockRender_callList(passSelect,visArg,block,shader,state,mtx,NULL,0,NULL,NULL);
+}
+
 
 static void mapBlockRender_setupShaderTextures(Shader* shader, int mode)
 {
+    /* Only an ordinary opaque multiplicative detail layer is removed. The
+     * original base layer still resolves animation/scrolls and its vertex
+     * lighting. Masks, alpha blends, projected textures, caustics and decals
+     * use the original constructor; geometry, visibility and draw order stay. */
+    if (fh_surface_detail && shader->layerCount == 2 &&
+        (shader->layers[1].typeBits & 0x7f) == 6 &&
+        !(shader->flags & (0xe0000000u | 0x80 | 0x100 | 0x400 | 0x20000 | 0x100000))) {
+        Shader base = *shader;base.layerCount = 1;
+        mapBlockRender_setupShaderTextures(&base, mode);
+        fh_surface_detail_world++;return;
+    }
+
     int layerIdx;
     ShaderLayer* layer;
     Texture* texture;
@@ -832,7 +1094,7 @@ static void mapBlockRender_setupShaderTextures(Shader* shader, int mode)
     return;
 }
 
-Shader* mapBlockRender_setShader(u8 doSetup, MapBlockData* blockData, ModelRenderInstrsState* state) {
+static Shader* fh_mapBlockRender_setShader(u8 doSetup, MapBlockData* blockData, ModelRenderInstrsState* state,int planned_shader) {
     Shader* shader;
     u32 shaderIdx;
     GXColor fogColor;
@@ -844,8 +1106,12 @@ Shader* mapBlockRender_setShader(u8 doSetup, MapBlockData* blockData, ModelRende
     u32 bits;
     u32 bitPos;
 
+    if (fh_minimal_enabled) {fh_minimal_movie_active=0;fh_minimal_callback.active=0;}
     fogColor = gTexShaderFogColor;
     bitPos = state->bit;
+    if (planned_shader>=0) {
+        state->bit=bitPos+6;shader=blockData->shaders+planned_shader;
+    } else
     {
         int off = (int)bitPos >> 3;
         byteBase = state->instrs;
@@ -872,11 +1138,13 @@ Shader* mapBlockRender_setShader(u8 doSetup, MapBlockData* blockData, ModelRende
     }
     if ((shader != 0) && ((SHADER_FLAGS(shader) & 0x20000) != 0)) {
         u32 res;
+        fh_minimal_texture_scope_end();
         res = AttractMovie_DrawTextureCallback(0, 0, 0);
         if ((res & 0xff) != 0) {
             return shader;
         }
     }
+    if (fh_render_floor) return shader;
     Rcp_ResetTextureStageState();
     if ((SHADER_FLAGS(shader) & 0x80) != 0) {
         setupHeatShimmerTevStages((char*)shader);
@@ -927,6 +1195,10 @@ Shader* mapBlockRender_setShader(u8 doSetup, MapBlockData* blockData, ModelRende
         GXSetCullMode(GX_CULL_NONE);
     }
     return shader;
+}
+
+Shader* mapBlockRender_setShader(u8 doSetup,MapBlockData* blockData,ModelRenderInstrsState* state) {
+    return fh_mapBlockRender_setShader(doSetup,blockData,state,-1);
 }
 
 typedef struct TrackP6Entry
@@ -1066,93 +1338,190 @@ void setupToRenderMapBlock(MapBlockData* block, void* posMtx)
     GXSetArray(GX_VA_TEX1, block->vertexTexCoords, block->texCoordCount * 4, 4, true);
 }
 
+
+static const FhSceneAsset* fh_scene_world_prepare(MapBlockData* block, unsigned char admitted[256], unsigned char visible[256]) {
+    if (fh_render_floor || !fh_native_scene_enabled) return NULL;
+    fh_native_scene_admission[6]++;
+    if (isHeavyFogEnabled()) return NULL;
+    fh_gx_dispatch_barrier();
+    const FhSceneAsset* asset = fh_native_scene_find(block);
+    if (asset) fh_native_scene_admission[7]++;
+    if (!asset || !asset->block || !fh_native_scene_source(asset, 0, block->vertices, block->vertexCount * 6u) ||
+        !fh_native_scene_source(asset, 2, block->vertexColors, block->colorCount * 2u) ||
+        !fh_native_scene_source(asset, 3, block->vertexTexCoords, block->texCoordCount * 4u) ||
+        !fh_native_scene_source(asset, 4, block->renderInstrsMain, block->nRenderInstrsMain)) return NULL;
+    for (unsigned i = 0; i < block->displayListCount; i++) {
+        MapBlockBoundsRec* list = block->displayLists + i;
+        if (!fh_native_scene_source(asset, 5 + i, list->dlist, list->dlistSize)) return NULL;
+    }
+    signed char material[64]; memset(material, -1, sizeof(material));
+    memset(admitted, 0, 256); memset(visible, 0, 256);
+    fh_native_scene_admission[8]++;
+    for (unsigned i = 0; i < asset->groups; i++) {
+        FhSceneGroup group; fh_native_scene_group(asset, i, &group);
+        unsigned ok = fh_renderer_scene_page(group.page) != NULL, lighting = 0xffffffff;
+        for (unsigned j = 0; ok && j < group.draws; j++) {
+            FhSceneSection section; fh_native_scene_section(asset, group.first_section + j, &section);
+            if (section.shader >= block->shaderCount || section.list >= block->displayListCount) { ok = 0; break; }
+            Shader* shader = block->shaders + section.shader;
+            /* Cloud/warp, radial lights and deferred lightmap passes retain
+             * their original path until the native equivalent is implemented. */
+            if (shader->flags & (2 | 0x20 | 0x40 | 0x800 | 0x1000 | 0x4000 | 0x8000 | 0x10000)) { ok = 0; break; }
+            unsigned mode = shader->flags & (1 | 4 | 0x40000);
+            if (lighting != 0xffffffff && lighting != mode) { ok = 0; break; }
+            lighting = mode;
+            if (material[section.shader] < 0) material[section.shader] = fh_scene_material(&section, shader, 1);
+            if (!material[section.shader]) { ok = 0; break; }
+            float loX, loY, loZ, hiX, hiY, hiZ;
+            unsigned seen = mapBlockBounds_ComputeAndTestPlanes(block->displayLists + section.list, block,
+                gViewFrustumPlanes, FRUSTUM_PLANE_COUNT, &loX, &loY, &loZ, &hiX, &hiY, &hiZ);
+            visible[group.first + j] = seen != 0;
+            if (seen && !(shader->flags & 0x80000)) {
+                int count = 0;
+                modelLightStruct_selectBrightestAabbLights(loX + playerMapOffsetX, loY, loZ + playerMapOffsetZ,
+                    hiX + playerMapOffsetX, hiY, hiZ + playerMapOffsetZ, gTexBlockLightList, 2, &count);
+                if (count) { ok = 0; break; }
+            }
+        }
+        admitted[i] = ok; fh_native_scene_admission[ok ? 9 : 10]++;
+    }
+    return asset;
+}
+static int fh_scene_world_draw(const FhSceneAsset* asset, const FhSceneGroup* group,
+    MapBlockData* block, const unsigned char visible[256], const float view[3][4]) {
+    FhSceneSection first; fh_native_scene_section(asset, group->first_section, &first);
+    Shader* shader = block->shaders + first.shader;
+    fh_scene_surface(group); GXSetNumChans(1);
+    if (shader->flags & 4) _gxSetFogParams();
+    else GXSetFog(GX_FOG_NONE, 0, 0, 0, 0, gTexShaderFogColor);
+    GXColor ambient = gTexShaderAmbColor;
+    if (!(shader->flags & (1 | 0x40000))) objGetSunColor(0, &ambient.r, &ambient.g, &ambient.b);
+    GXSetChanAmbColor(GX_COLOR0, ambient);
+    GXSetChanCtrl(GX_COLOR0, (shader->flags & 0x40000) ? GX_DISABLE : GX_ENABLE,
+        GX_SRC_REG, GX_SRC_VTX, GX_LIGHT_NULL, GX_DF_NONE, GX_AF_NONE);
+    GXSetChanCtrl(GX_ALPHA0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHT_NULL, GX_DF_NONE, GX_AF_NONE);
+    const float pose[16] = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    FhModelSource source = {.position_count=block->vertexCount, .color_count=block->colorCount, .uv_count=block->texCoordCount};
+    for (unsigned j = 0; j < group->draws;) {
+        if (!visible[group->first + j]) { j++; continue; }
+        FhSceneSection section; fh_native_scene_section(asset, group->first_section + j, &section);
+        FhSceneGroup part = *group; part.index += section.first; part.indices = 0; part.draws = 0;
+        do {
+            fh_native_scene_section(asset, group->first_section + j, &section);
+            part.indices += section.count; part.draws++; j++;
+        } while (j < group->draws && visible[group->first + j]);
+        if (!fh_gx_native_scene_draw(asset, &part, &source, pose, 1, view, 1)) return 0;
+    }
+    return 1;
+}
+
+/* No live shader, texture or matrix state is cached. Exclude callbacks before
+ * executing anything; unsupported/over-budget plans use the whole interpreter. */
+static int fh_execute_world_plan(const FhSceneAsset* asset,MapBlockData* block,
+    ModelRenderInstrsState* state,float* matrix) {
+    const FhWorldDrawPlan* plan=fh_native_scene_world_plan(asset);
+    if (!plan) return 0;
+    for (unsigned i=0;i<plan->commands;i++) {
+        const FhWorldPlanOp* op=plan->command+i;
+        if (op->kind==1 && (op->value>=block->shaderCount ||
+            (block->shaders[op->value].flags&0x20000))) return 0;
+        if (op->kind==2 && (op->shader>=block->shaderCount || op->value>=block->displayListCount)) return 0;
+    }
+    Shader* shader=NULL;
+    fh_world_plan_runs++;
+    for (unsigned i=0;i<plan->commands;i++) {
+        const FhWorldPlanOp* op=plan->command+i;
+        state->bit=op->bit;
+        if (op->kind==1) shader=fh_mapBlockRender_setShader(TRUE,block,state,op->value);
+        else if (op->kind==3) {
+            /* Retain descriptor side effects for subsequent generic effects. */
+            GXClearVtxDesc();
+            GXSetVtxDesc(GX_VA_POS,(op->value&1)?GX_INDEX16:GX_INDEX8);
+            GXSetVtxDesc(GX_VA_CLR0,(op->value&2)?GX_INDEX16:GX_INDEX8);
+            unsigned count=shader && !(shader->flags&0x80000000)?shader->layerCount:1;
+            for (unsigned j=0;j<count;j++) GXSetVtxDesc(GX_VA_TEX0+j,(op->value&4)?GX_INDEX16:GX_INDEX8);
+        } else {
+            fh_world_plan_draws++;
+            fh_mapBlockRender_callList(TRUE,0,block,shader,state,matrix,asset,op->ordinal,op,plan->draw+op->ordinal);
+        }
+    }
+    return 1;
+}
+
+static unsigned fh_deferred_queued,fh_deferred_drawn,fh_deferred_unimplemented;
+static unsigned fh_deferred_skip_flags[48],fh_deferred_skip_family[48],fh_deferred_skip_count[48],fh_deferred_skip_kinds;
+void fh_platform_log(const char*);
+int snprintf(char*,unsigned int,const char*,...);
+void sceneDrawTransparentPolys(void);
+extern unsigned fh_pica_world_water_active;
+void fh_pica_game_deferred_counts(unsigned out[3]){
+    out[0]=fh_deferred_queued;out[1]=fh_deferred_drawn;out[2]=fh_deferred_unimplemented;
+    for(unsigned k=0;k<fh_deferred_skip_kinds;k++){char line[96];int n=snprintf(line,sizeof line,"PICA deferred skipped: family=%u flags=%08x count=%u",fh_deferred_skip_family[k],fh_deferred_skip_flags[k],fh_deferred_skip_count[k]);if(n>0&&n<94){line[n]=10;line[n+1]=0;}fh_platform_log(line);}
+}
+static void fh_pica_queue_world_deferred(MapBlockData *block,unsigned stream){
+    if(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_WORLD))return;
+    const FhSceneAsset *asset=fh_native_scene_find(block);
+    const FhPicaWorldDeferredPlan *plan=asset?fh_native_scene_deferred_plan(asset):NULL;
+    if(!plan || stream<1 || stream>2)return;
+    unsigned first=stream==2?plan->count[0]:0,count=plan->count[stream-1];
+    const float *depth=((const float*)Camera_GetViewMatrix())+8;
+    float translation[3]={block->transform[0][3],block->transform[1][3],block->transform[2][3]};
+    for(unsigned i=first;i<first+count;i++){
+        const FhPicaWorldDeferredEntry *e=plan->entries+i;
+        unsigned flags=block->shaders[e->draw.material].flags;
+        /* First native family: ordinary alpha surfaces. Projected falloff,
+         * caustics and additional effects need distinct native consumers. */
+        if((e->draw.family==5 && !fh_hardware_is_new) || (e->draw.family!=5 && (e->draw.family!=4 || !fh_pica_deferred_surface_flags(flags)))){
+            {unsigned k=0;for(;k<fh_deferred_skip_kinds;k++)if(fh_deferred_skip_flags[k]==flags&&fh_deferred_skip_family[k]==e->draw.family)break;
+            if(k==fh_deferred_skip_kinds&&k<48){fh_deferred_skip_flags[k]=flags;fh_deferred_skip_family[k]=e->draw.family;fh_deferred_skip_kinds++;}
+            if(k<48)fh_deferred_skip_count[k]++;}
+            fh_deferred_unimplemented++;continue;
+        }
+        float loX,loY,loZ,hiX,hiY,hiZ;
+        if(!mapBlockBounds_ComputeAndTestPlanes(block->displayLists+e->draw.list,block,
+            gViewFrustumPlanes,FRUSTUM_PLANE_COUNT,&loX,&loY,&loZ,&hiX,&hiY,&hiZ))continue;
+        uint32_t key;
+        if(!fh_pica_world_sort_key(&e->bounds,gTrackPackedCoordScale,translation,depth,&key))continue;
+        if(gLightmapDrawQueueCount==1000){sceneDrawTransparentPolys();gLightmapDrawQueueCount=0;}
+        gLightmapDrawQueue[gLightmapDrawQueueCount].a=(uintptr_t)e;
+        gLightmapDrawQueue[gLightmapDrawQueueCount].b=(uintptr_t)block;
+        gLightmapDrawQueue[gLightmapDrawQueueCount].key=key;
+        gLightmapDrawQueue[gLightmapDrawQueueCount++].d=4;fh_deferred_queued++;
+    }
+}
+
+static int fh_deferred_fade_visible(const FhPicaWorldDeferredEntry *e,MapBlockData *block){
+    GameObject *player=Obj_GetPlayerObject();
+    if(!player)return 1;
+    float dist=Camera_DistanceToCurrentViewPosition(player->anim.worldPosX,player->anim.worldPosY,player->anim.worldPosZ);
+    const float *row=((const float*)Camera_GetViewMatrix())+8;
+    float farthest=-1e30f;
+    for(unsigned c=0;c<8;c++){
+        float p[3];
+        for(unsigned k=0;k<3;k++)p[k]=(((c>>k)&1)?e->bounds.hi[k]:e->bounds.lo[k])*gTrackPackedCoordScale+block->transform[k][3];
+        float d=-(((row[0]*p[0]+row[1]*p[1])+row[2]*p[2])+row[3]);
+        if(d>farthest)farthest=d;
+    }
+    return farthest>=dist-10.f;
+}
+void fh_pica_game_deferred_draw(const FhPicaWorldDeferredEntry *e,MapBlockData *block){
+    const FhSceneAsset *asset=fh_native_scene_find(block);
+    if(!asset || !fh_pica_world_prepare_positions(asset))return;
+    if(e->draw.family==4 && (e->geometry.flags&0x2000u) && !fh_deferred_fade_visible(e,block))return;
+    float camera[3][4];unsigned clip[4];
+    PSMTXConcat((MtxPtr)Camera_GetViewMatrix(),block->transform,camera);
+    GXGetScissor(clip,clip+1,clip+2,clip+3);
+    /* Live state already prepared for this block's main pass. */
+    fh_pica_world_water_active=e->draw.family==5;
+    fh_pica_scene_world_slice(asset,&e->geometry,camera,
+        (const float(*)[4])Camera_GetProjectionMatrix(),clip);fh_deferred_drawn++;
+    fh_pica_world_water_active=0;
+}
+
 void renderMapBlock(MapBlockData* block, u8 type)
 {
-    ModelRenderInstrsState state;
-    f32 m[16];
-    void* instructions;
-    int done;
-    Shader* shader;
-    u8 doSetup;
-    u16 instructionCount;
-    void* viewMtx;
-
-    shader = NULL;
-    doSetup = FALSE;
-    if (type == 1)
-    {
-        instructions = block->renderInstrsTransp;
-        instructionCount = block->nRenderInstrsTransp;
-    }
-    else if (type == 2)
-    {
-        instructions = block->renderInstrsWater;
-        instructionCount = block->nRenderInstrsWater;
-    }
-    else
-    {
-        instructions = block->renderInstrsMain;
-        instructionCount = block->nRenderInstrsMain;
-        doSetup = TRUE;
-    }
-    if (instructionCount == 0)
-        return;
-    viewMtx = Camera_GetViewMatrix();
-    PSMTXConcat((MtxPtr)viewMtx, block->transform, (MtxPtr)m);
-    if (doSetup)
-        setupToRenderMapBlock(block, m);
-    modelRenderInstrsState_init(&state, instructions, instructionCount << 3, instructionCount << 3);
-    done = FALSE;
-    while (!done)
-    {
-        u32 word;
-        int op;
-        int pos;
-        int off = (pos = state.bit) >> 3;
-        u8* base;
-        u8* bp;
-
-        base = state.instrs;
-        bp = base + off;
-        word = bp[0];
-        word |= bp[1] << 8;
-        word |= bp[2] << 16;
-        state.bit = pos + 4;
-        op = (word >> (pos & 7)) & 0xf;
-        switch (op)
-        {
-        case 3:
-            mapBlockRender_setVtxDcrs(doSetup, block, shader, &state);
-            break;
-        case 1:
-            shader = mapBlockRender_setShader(doSetup, block, &state);
-            break;
-        case 2:
-            mapBlockRender_callList(doSetup, 0, block, shader, &state, m);
-            break;
-        case 4:
-        {
-            u32 word2;
-            int cnt;
-            int i;
-            u8* bp2;
-            ModelRenderInstrsState* sp = &state;
-            int pos2 = pos + 4;
-            bp2 = base + (pos2 >> 3);
-            word2 = bp2[0];
-            word2 |= bp2[1] << 8;
-            word2 |= bp2[2] << 16;
-            state.bit = pos2 + 4;
-            cnt = (word2 >> (pos2 & 7)) & 0xf;
-            for (i = 0; i < cnt; i++)
-                modelRenderInstrsState_advance(sp, 8);
-            break;
-        }
-        case 5:
-            done = TRUE;
-            break;
-        }
-    }
+    if(type==0)fh_budget_world(block);
+    else fh_pica_queue_world_deferred(block,type);
 }
 
 void renderGlows(void)
@@ -1434,6 +1803,104 @@ Shader* mapBlockGetShader(MapBlockData* obj, int idx)
     return obj->shaders + idx;
 }
 
+
+static void fh_pica_load_materials(MapBlockData* block) {
+    if(!fh_pica_scene_enabled)return;
+    const FhSceneAsset* asset=fh_native_scene_find(block);
+    if(!asset || !fh_pica_world_attach_positions(asset,block->vertices,block->vertexCount)) {
+        fh_minimal_coverage_failure(34,asset?asset->id:0,0);return;
+    }
+    if(!fh_pica_scene_textured)return;
+    const FhPicaWorldPlan* plan=fh_native_scene_pica_plan(asset);
+    const FhPicaWorldDeferredPlan *deferred=fh_native_scene_deferred_plan(asset);
+    unsigned deferred_readers=0;
+    if(deferred)for(unsigned i=0;i<deferred->count[0]+deferred->count[1];i++)
+        deferred_readers+=(deferred->entries[i].draw.family==5 && fh_hardware_is_new) || (deferred->entries[i].draw.family==4 &&
+            fh_pica_deferred_surface_flags(deferred->entries[i].geometry.flags));
+    if(plan && !plan->count && !deferred_readers)return;
+    if(!plan || block->shaderCount>64 || !fh_pica_materials_begin(asset,block->shaderCount)) {
+        fh_minimal_coverage_failure(29,asset?asset->id:0,0);return;
+    }
+    unsigned used[64]={0};
+    for(unsigned i=0;i<plan->count;i++) {
+        if(plan->draw[i].material>=block->shaderCount){fh_minimal_coverage_failure(29,asset->id,1);return;}
+        used[plan->draw[i].material]=1;
+    }
+    if(deferred)for(unsigned i=0;i<deferred->count[0]+deferred->count[1];i++){
+        const FhPicaWorldDeferredEntry *e=deferred->entries+i;
+        if((e->draw.family==5 && fh_hardware_is_new) || (e->draw.family==4 && fh_pica_deferred_surface_flags(e->geometry.flags)))used[e->draw.material]=1;
+    }
+    for(unsigned i=0;i<block->shaderCount;i++)if(used[i]) {
+        Shader* sh=block->shaders+i;
+        unsigned layers=sh->layerCount,counts[2]={0,0};
+        if(layers>2 || (layers==2 && (sh->layers[1].typeBits&127)!=9)) {
+            fh_minimal_coverage_failure(30,asset->id,i);continue;
+        }
+        if(layers==1 && !sh->layers[0].texture)layers=0;
+        for(unsigned j=0;j<layers;j++) {
+            Texture* t=sh->layers[j].texture;
+            counts[j]=t?(t->animationFrameCount+255u)/256u:0;
+            if(!counts[j] && t)counts[j]=1;
+        }
+        if(!fh_pica_material_begin(asset,i,layers,counts[0],counts[1],sh->flags)) {
+            fh_minimal_coverage_failure(31,asset->id,i);continue;
+        }
+        for(unsigned j=0;j<layers;j++)for(unsigned k=0;k<counts[j];k++) {
+            Texture* t=textureGetAnimationFrame(sh->layers[j].texture,k<<8);
+            FhTexture image;
+            if(!t || !fh_gx_texture_view(textureGetGXTexObj(t),&image) ||
+                !fh_pica_material_frame(asset,i,j,k,&image))fh_minimal_coverage_failure(32,asset->id,i);
+        }
+    }
+    if(!fh_pica_materials_compile(asset)) {
+        char line[128];snprintf(line,sizeof(line),"PICA world materials declined: asset=%u\\n",asset->id);fh_platform_log(line);
+        fh_pica_materials_release(fh_native_scene_pica_materials(asset));
+    }
+}
+static void fh_pica_live_materials(const FhSceneAsset* asset,MapBlockData* block) {
+    if(!fh_pica_scene_textured)return;
+    if(fh_graphics_options&FH_GRAPHICS_HEIGHT_FOG){
+    /* Original generated image, camera matrix and fog colour; no GX callbacks
+     * or draw-time texture acquisition. PNMTX0 is this block's camera matrix. */
+    extern float gHeavyFogDepthScale,gHeavyFogDepthOffset,gHeavyFogTop,gHeavyFogBottom;
+    extern unsigned char gHeavyFogMode,gNewShadowHeavyFogIntensity;
+    Texture *height_image=NULL;unsigned char fog_rgba[4]={0,0,0,255};
+    if(isHeavyFogEnabled())getNewShadowHeavyFogTexture(&height_image);
+    if(height_image)getFogColorRgb(fog_rgba);
+    unsigned fog_color=(unsigned)fog_rgba[0]|((unsigned)fog_rgba[1]<<8)|((unsigned)fog_rgba[2]<<16)|((unsigned)fog_rgba[3]<<24);
+    fh_pica_height_fog_world_set(height_image?(const unsigned char*)height_image+sizeof(Texture):NULL,
+        gNewShadowHeavyFogIntensity,(const float(*)[4])Camera_GetInverseViewMatrix(),
+        gHeavyFogDepthScale,gHeavyFogDepthOffset,gHeavyFogTop,gHeavyFogBottom,fog_color,gHeavyFogMode);
+    }else fh_pica_height_fog_world_disable();
+
+    /* One small parameter record per material, irrespective of draw count.
+     * Animation producers and texture scrolling remain the game's own code. */
+    for(unsigned i=0;i<block->shaderCount;i++) {
+        Shader* sh=block->shaders+i;float tint[4]={1,1,1,1},scroll[2][2]={{0}};
+        unsigned frame[2]={0,0},konst;memcpy(&konst,&lbl_803DEBB0,4);
+        if(!(sh->flags&0x40000)) {
+            unsigned char rgb[4];
+            if(sh->flags&(1|0x800|0x1000))memcpy(rgb,&gTexShaderAmbColor,4);
+            else objGetSunColor(0,rgb,rgb+1,rgb+2);
+            for(unsigned j=0;j<3;j++)tint[j]=rgb[j]/255.f;
+        }
+        if(!(fh_graphics_options&FH_GRAPHICS_NO_WORLD_TEX))for(unsigned j=0;j<sh->layerCount && j<2;j++) {
+            ShaderLayer* layer=sh->layers+j;
+            if(layer->materialId)for(unsigned k=0;k<0x50;k++) {
+                MapTextureOverride* entry=gMapTextureOverrides+k;
+                if(entry->refCount>0 && entry->texture==layer->texture && entry->type==layer->materialId) {
+                    frame[j]=entry->frame<0?0:(unsigned)entry->frame;break;
+                }
+            }
+            if(layer->scrollMtx!=0xff) {
+                scroll[j][0]=gMapTextureScrolls[layer->scrollMtx].offsetX/1048576.f;
+                scroll[j][1]=gMapTextureScrolls[layer->scrollMtx].offsetY/1048576.f;
+            }
+        }
+        fh_pica_material_live(asset,i,tint,scroll,frame,konst,sh->flags);
+    }
+}
+
 void MapBlock_initShaders(MapBlockData* block)
 {
     int i;
@@ -1471,6 +1938,7 @@ void MapBlock_initShaders(MapBlockData* block)
             sh->auxTexture = NULL;
         }
     }
+    fh_pica_load_materials(block);
 }
 
 static inline void* mapBlockRelocatePointer(MapBlockData* block, void* offset)
@@ -1505,6 +1973,7 @@ void MapBlock_init(MapBlockData* block)
     {
         block->displayLists[i].dlist = mapBlockRelocatePointer(block, block->displayLists[i].dlist);
     }
+    fh_native_ground_mask_load(block,mapBlockGetPolygon(block,0),block->nPolygons);
 }
 
 void MapBlock_initHits(MapBlockData* block, int index)
@@ -1778,6 +2247,8 @@ MapBlockData* MapBlock_loadFromFile(int blockId)
         return 0;
     }
     loadAndDecompressDataFile(MLDF_FILEID_BLOCKS_BIN_A, raw, blockOff, compressedLen, 0, 0, 0);
+    extern void fh_model_lod_prepare(void*, unsigned, unsigned);
+    fh_model_lod_prepare(raw, decompressedSize, 0x80000000u | (unsigned)blockId);
     if (decompressedSize < 0xa4)
     {
         mm_free(raw);
@@ -1794,6 +2265,7 @@ MapBlockData* MapBlock_loadFromFile(int blockId)
         mm_free(raw);
         return 0;
     }
+    fh_native_scene_register(block, raw, decompressedSize, 0x80000000u | (unsigned)blockId);
     memcpy((u8*)block + rawOffset, raw, decompressedSize);
     mapBlockUnpackFile(block, (u8*)block + rawOffset, rawOffset, allocationSize,
                        textureOffset, displayListOffset, shaderOffset);

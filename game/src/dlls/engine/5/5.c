@@ -1,3 +1,11 @@
+#include "fh_platform.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_cloud.h"
+#include "fh_pica_hud.h"
+#include "main/rcp_dolphin_render.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "main/sky_state.h"
 #include "main/dll/savegame_env.h"
 #include "main/dll/savegame_load.h"
@@ -1314,6 +1322,22 @@ void renderSunAndMoon(int a, int b, int c, int d, int visible) {
     }
 }
 
+static float fh_sky_last_phase,fh_sky_last_fade;
+static unsigned fh_sky_last_valid;
+static void fh_sky_freeze_transition(void){
+    if(!fh_sky_last_valid)return;
+    uint64_t start=fh_platform_ticks();
+    Texture *destination=SKY_TEXTURE_SLOT(((SkyState*)gSkyState)->swapTexIndex+2);
+    /* Retirement precedes replacement. CPU writes only a transition snapshot;
+     * the live gradient does not mutate or upload images. */
+    fh_pica_hud_release(destination);
+    blendTextures(SKY_TEXTURE_SLOT(1),SKY_TEXTURE_SLOT(0),fh_sky_last_phase,destination);
+    if(fh_sky_last_fade)blendTextures(SKY_TEXTURE_SLOT(4),destination,fh_sky_last_fade,destination);
+    fh_pica_game_hud_loaded(destination);
+    fh_pica_sky_snapshots++;fh_pica_sky_snapshot_bytes+=destination->dataSize;
+    fh_pica_sky_snapshot_ticks+=fh_platform_ticks()-start;
+    fh_sky_last_valid=0;
+}
 void skyRenderTimeOfDayBackdrop(void) {
     int* sky;
     int texA;
@@ -1388,25 +1412,24 @@ void skyRenderTimeOfDayBackdrop(void) {
             if (((SkyTimeBlend*)sky)->texAId != texA) {
                 textureFree(SKY_TEXTURE_SLOT(0));
                 SKY_TEXTURE_SLOT(0) = textureLoadAsset(texA);
+        fh_pica_game_hud_loaded(SKY_TEXTURE_SLOT(0));
                 ((SkyTimeBlend*)gSkyState)->texAId = texA;
             }
             sky = *(int**)&gSkyState;
             if (((SkyTimeBlend*)sky)->texBId != texB) {
                 textureFree(SKY_TEXTURE_SLOT(1));
                 SKY_TEXTURE_SLOT(1) = textureLoadAsset(texB);
+        fh_pica_game_hud_loaded(SKY_TEXTURE_SLOT(1));
                 ((SkyTimeBlend*)gSkyState)->texBId = texB;
             }
             ((SkyTimeBlend*)gSkyState)->prevPhase = (s8)((SkyTimeBlend*)gSkyState)->phase;
         }
-        blendTextures(SKY_TEXTURE_SLOT(1), SKY_TEXTURE_SLOT(0), tc,
-                      SKY_TEXTURE_SLOT(((SkyTimeBlend*)gSkyState)->texSel + 2));
-        ((SkyState*)gSkyState)->fadeFlags.fadePending = 1;
-        sky = *(int**)&gSkyState;
-        blend = ((SkyTimeBlend*)sky)->blend;
-        if (blend) {
-            texHandle = SKY_TEXTURE_SLOT(((SkyTimeBlend*)sky)->texSel + 2);
-            blendTextures(SKY_TEXTURE_SLOT(4), texHandle, blend, texHandle);
-        }
+        /* Keep the last displayed composition for an environment transition.
+         * GPU combiners perform these blends on ordinary frames. */
+        fh_sky_last_phase=tc;fh_sky_last_fade=((SkyTimeBlend*)gSkyState)->blend;
+        fh_sky_last_valid=1;
+        ((SkyState*)gSkyState)->fadeFlags.fadePending=1;
+        blend=((SkyTimeBlend*)gSkyState)->blend;
         sky = *(int**)&gSkyState;
         idxA = (s16)(sky[((SkyTimeBlend*)sky)->phase + 0x87] - 0xc38) * 6;
         tbl = gSkyColorBlendTable;
@@ -1445,28 +1468,19 @@ void skyRenderTimeOfDayBackdrop(void) {
         ang0 = texHeightF / 2.0f - 6.0f - 3.0f * (texHeightF * cam->worldPitch) / 32768.0f;
         angle = ang0 + sinProd;
         angle *= 32.0f;
-        (*gSky2Interface)->applyTextColor(0);
-        GXSetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, fogColor);
-        selectTexture(texC, 0);
-        gxSetOpaqueNoZWriteMode();
-        GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR_NULL);
-        GXSetTevDirect(GX_TEVSTAGE0);
-        GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_TEXC, GX_CC_C1, GX_CC_A1, GX_CC_ZERO);
-        GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
-        GXSetTevSwapMode(GX_TEVSTAGE0, GX_TEV_SWAP0, GX_TEV_SWAP0);
-        GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-        GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-        GXSetTexCoordGen2(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_FALSE, GX_PTIDENTITY);
-        GXSetNumIndStages(0);
-        GXSetNumChans(0);
-        GXSetNumTexGens(1);
-        GXSetNumTevStages(1);
         screenRes = getScreenResolution();
         sinProd *= 2.0f;
         texHeight = texC->height;
         v = angle / (32.0f * (f32)texHeight);
-        drawOrthoTexturedQuad(0, 0, (screenRes & 0xffff) << 2, (screenRes >> 16) << 2, 0.0f, v, 1.0f,
-                              v - sinProd / (f32)texHeight, -0x18f);
+
+        float rect[4]={0,0,(screenRes&0xffff)<<2,(screenRes>>16)<<2};
+        float uv[4]={0,v,1,v-sinProd/(f32)texHeight};unsigned clip[4];
+        GXGetScissor(clip,clip+1,clip+2,clip+3);
+        fh_pica_hud_gradient(fh_pica_hud_page(SKY_TEXTURE_SLOT(0)),fh_pica_hud_page(SKY_TEXTURE_SLOT(1)),
+            blend?fh_pica_hud_page(SKY_TEXTURE_SLOT(4)):0,
+            (unsigned)(255.f*tc)&255,(unsigned)(255.f*blend)&255,fh_pica_game_sky_tint(),
+            (const float(*)[4])hudMatrix,rect,-0x18f,uv,clip);
+        
     }
 }
 
@@ -1683,9 +1697,11 @@ void skyLoadLights(void) {
     gSkyTimeOfDayLighting.moonDirection[1] = (-1.0f);
     gSkyTimeOfDayLighting.moonDirection[2] = 0.0f;
     gSkySkyTexture = textureLoadAsset(SKY_TEXTURE_SKY);
+    if(fh_pica_scene_actors)fh_pica_game_hud_loaded(gSkySkyTexture);
 }
 
 void skyResetState(void) {
+    fh_sky_last_valid=0;
     Texture* tex0;
     int i;
     int j;
@@ -1724,7 +1740,9 @@ void skyResetState(void) {
     ((SkyState*)gSkyState)->skyTextureIds[6] = 0xc38;
     ((SkyState*)gSkyState)->skyTextureIds[7] = 0xc38;
     SKY_TEXTURE_SLOT(0) = textureLoadAsset(((SkyState*)gSkyState)->skyTextureIds[0]);
+        fh_pica_game_hud_loaded(SKY_TEXTURE_SLOT(0));
     SKY_TEXTURE_SLOT(1) = textureLoadAsset(((SkyState*)gSkyState)->skyTextureIds[1]);
+        fh_pica_game_hud_loaded(SKY_TEXTURE_SLOT(1));
     ((SkyState*)gSkyState)->textureId0 = 0xc38;
     ((SkyState*)gSkyState)->textureId1 = 0xc38;
     tex0 = SKY_TEXTURE_SLOT(0);
@@ -1884,6 +1902,7 @@ void skyUpdateEnvfxAct(int a, int b, u8* cfg) {
             ((SkyState*)gSkyState)->skyTextureIds[5] = fhReadBE16(&config->skyTexId5) + 0xc38;
             ((SkyState*)gSkyState)->skyTextureIds[6] = fhReadBE16(&config->skyTexId6) + 0xc38;
             ((SkyState*)gSkyState)->skyTextureIds[7] = fhReadBE16(&config->skyTexId7) + 0xc38;
+            fh_sky_freeze_transition();
             tmp = SKY_TEXTURE_SLOT(4);
             SKY_TEXTURE_SLOT(4) = SKY_TEXTURE_SLOT(((SkyState*)gSkyState)->swapTexIndex + 2);
             SKY_TEXTURE_SLOT(((SkyState*)gSkyState)->swapTexIndex + 2) = tmp;
@@ -1921,3 +1940,11 @@ void skyUpdateEnvfxAct(int a, int b, u8* cfg) {
 }
 
 f32 gSkyOverrideLightDirection[4];
+
+/* Pure sky/light state formerly tied to the omitted render entry. */
+void fh_pica_game_sky_update(unsigned visible){
+    /* Original pose/direction update; objRender dispatches native actors. */
+    if(gSkySunObject && gSkyMoonObject){renderSunAndMoon(0,0,0,0,visible);fh_pica_celestial_updates++;}
+    skyUpdateShadowLightDirection();
+    skyUpdateLightingFromTimeOfDay();
+}

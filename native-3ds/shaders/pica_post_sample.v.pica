@@ -1,0 +1,22 @@
+; Three independent affine UV sets for immutable fullscreen post-effect quads.
+; Separate short program; no growth of the actor shader or geometry stage.
+.fvec u0, v0map, u1, v1map, u2, v2map
+.constf constants(0.0,1.0,0.0,0.0)
+.out outpos position
+.out outcolor color
+.out outuv0 texcoord0
+.out outuv1 texcoord1
+.out outuv2 texcoord2
+.proc main
+    mov outpos, v0
+    mov outcolor, v1
+    mov r0.xy, v2
+    mov r0.z, constants.y
+    dp3 outuv0.x, u0, r0
+    dp3 outuv0.y, v0map, r0
+    dp3 outuv1.x, u1, r0
+    dp3 outuv1.y, v1map, r0
+    dp3 outuv2.x, u2, r0
+    dp3 outuv2.y, v2map, r0
+    end
+.end

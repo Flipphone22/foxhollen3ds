@@ -1,0 +1,61 @@
+; Immutable source point centres, group parameter index, and quad corner ID.
+; GPU expands the point in clip space. No CPU point/quad transform or GS.
+.fvec view[3], projection[4], sizes[16], corners[4], texscale, pixels, palette
+.fvec point_centers[30]
+; Match the shared scene fog ABI; padding reserves uniforms, not instructions.
+.fvec fog_padding[34], fog_distance_scale
+.bool textured
+.bool live_points
+.constf constants(0.0,1.0,0.5,0.0625)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0
+.out outpalette texcoord1
+.out outfog texcoord2
+.proc main
+    mova a0.x, v1.x
+    mov r0.xyz, v0
+    ifu live_points
+        mov r0.xyz, point_centers[a0.x]
+    .end
+    mov r0.w, constants.y
+    dp4 r1.x, view[0], r0
+    dp4 r1.y, view[1], r0
+    dp4 r1.z, view[2], r0
+    mov r1.w, constants.y
+    mov outfog.yzw, constants.xxxy
+    mul outfog.x, fog_distance_scale.x, -r1.z
+    dp4 r2.x, projection[0], r1
+    dp4 r2.y, projection[1], r1
+    dp4 r2.z, projection[2], r1
+    dp4 r2.w, projection[3], r1
+    mova a0.xy, v1
+    mov r3, corners[a0.y]
+    mul r4.xy, pixels, r3
+    ifu textured
+        mul r4.xy, sizes[a0.x].x, r4
+    .else
+        mul r4.xy, pixels.z, r4
+    .end
+    mad r2.xy, r4, r2.w, r2
+    mov outpos.x, r2.y
+    mov outpos.y, -r2.x
+    mov outpos.zw, r2
+    mov outcolor, constants.yyyy
+    add r3.xy, constants.z, r3
+    mul r3.xy, texscale, r3
+    add r3.y, constants.y, -r3.y
+    mov r3.zw, constants.xxxy
+    mov outuv, r3
+    add r5.x, palette.x, v1.x
+    mul r5.x, constants.w, r5.x
+    flr r5.y, r5.x
+    add r5.x, r5.x, -r5.y
+    add r5.x, palette.y, r5.x
+    mul r5.y, palette.w, r5.y
+    add r5.y, palette.z, r5.y
+    add r5.y, constants.y, -r5.y
+    mov r5.zw, constants.xxxy
+    mov outpalette, r5
+    end
+.end

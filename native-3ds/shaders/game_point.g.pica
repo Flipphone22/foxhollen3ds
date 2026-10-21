@@ -1,0 +1,81 @@
+; Adapted from melee-3ds point.g.pica, c2ebe7c769b3287f2b3748173e8fe5ec24ef408e.
+; GPL-3.0; see ../licenses/melee-GPL-3.0.txt.
+; Shared SFA vertex shader outputs: position/color/UV0/Q/UV1/UV2.
+.gsh point c0
+.fvec point_params
+.constf point_constants(0.0,1.0,0.0,0.0)
+.constf point_clip_guard(1.01,1.01,1.01,1.01)
+.out point_position position
+.out point_color color
+.out point_uv texcoord0
+.out point_q texcoord0w
+.out point_uv1 texcoord1
+.out point_uv2 texcoord2
+.entry point_main
+.proc point_main
+    mov r0, v0
+    cmp point_constants.x, lt, lt, r0.w
+    jmpc !cmp.x, point_done
+    add r1.x, r0.z, r0.w
+    cmp point_constants.x, le, le, r1.x
+    jmpc !cmp.x, point_done
+    cmp point_constants.x, ge, ge, r0.z
+    jmpc !cmp.x, point_done
+    mul r1.xy, point_params, r0.w
+    ; The point's expanded box, not its center, must be off-screen. Keep a
+    ; one-percent outward guard against float24 addition/rounding at an edge.
+    ; Depth/W admission above guarantees a positive homogeneous radius.
+    max r2.xy, r0, -r0
+    max r3.xy, r1, -r1
+    add r3.xy, r0.ww, r3
+    mul r3.xy, point_clip_guard, r3
+    cmp r2.x, gt, gt, r3.x
+    jmpc cmp.x, point_done
+    cmp r2.y, gt, gt, r3.y
+    jmpc cmp.x, point_done
+    mul r4.xy, point_params.zw, v3.xx
+    setemit 0
+    mov point_position, r0
+    add point_position.xy, r0, r1
+    mov point_color, v1
+    mov point_uv, v2
+    mov point_q, v3
+    mov point_uv1, v4
+    mov point_uv2, v5
+    emit
+    setemit 1
+    mov point_position, r0
+    add point_position.x, r0.x, -r1.x
+    add point_position.y, r0.y, r1.y
+    mov point_color, v1
+    mov point_uv, v2
+    add point_uv.y, -r4.y, v2.y
+    mov point_q, v3
+    mov point_uv1, v4
+    mov point_uv2, v5
+    emit
+    setemit 2, prim
+    mov point_position, r0
+    add point_position.x, r0.x, r1.x
+    add point_position.y, r0.y, -r1.y
+    mov point_color, v1
+    mov point_uv, v2
+    add point_uv.x, r4.x, v2.x
+    mov point_q, v3
+    mov point_uv1, v4
+    mov point_uv2, v5
+    emit
+    setemit 0, inv prim
+    mov point_position, r0
+    add point_position.xy, r0, -r1
+    mov point_color, v1
+    mov point_uv, v2
+    add point_uv.x, r4.x, v2.x
+    add point_uv.y, -r4.y, v2.y
+    mov point_q, v3
+    mov point_uv1, v4
+    mov point_uv2, v5
+    emit
+point_done:
+    end
+.end

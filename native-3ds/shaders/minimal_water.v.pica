@@ -1,0 +1,36 @@
+; Screen-space reflection, original vertex alpha and animated surface UVs.
+.fvec view[3], projection[4], tint, uvscale, foamscale
+.constf constants(0.0,1.0,0.5,0.0)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0
+.out outq texcoord0w
+.out outwave texcoord1
+.out outfoam texcoord2
+.proc main
+    dp4 r0.x, view[0], v0
+    dp4 r0.y, view[1], v0
+    dp4 r0.z, view[2], v0
+    mov r0.w, constants.y
+    dp4 r1.x, projection[0], r0
+    dp4 r1.y, projection[1], r0
+    dp4 r1.z, projection[2], r0
+    dp4 r1.w, projection[3], r0
+    mov outpos, r1
+    mul outcolor, tint, v1
+    add r2.x, r1.w, -r1.y
+    add r2.y, r1.w, r1.x
+    mul outuv.xy, constants.zz, r2
+    mov outuv.zw, constants.xxxy
+    mov outq, r1.wwww
+    mul r2.xy, uvscale, v2
+    add r2.xy, uvscale.zw, r2
+    mov outwave.x, r2.x
+    add outwave.y, constants.y, -r2.y
+    mov outwave.zw, constants.xxxy
+    mul r2.xy, foamscale, v2
+    mov outfoam.x, r2.x
+    add outfoam.y, constants.y, -r2.y
+    mov outfoam.zw, constants.xxxy
+    end
+.end

@@ -1,0 +1,45 @@
+; The vertex processors already classified and projected the whole triangle.
+; GS only unpacks output attributes and emits the original winding. Seven
+; input registers. This private program never uses fragment lighting/view.
+.gsh point c0
+.constf constants(0.0,1.0,0.0,0.0)
+.out outpos position
+.out outcolor color
+.out outuv texcoord0.xy
+.out - texcoord0w outuv.z
+.out outramp texcoord1
+.out outview view
+.out outquat normalquat
+.out outfog texcoord2
+.entry main
+.proc main
+    cmp constants.x, lt, lt, v6.x
+    ifc cmp.x
+    mov r0, v0
+    mov r1, v1
+    setemit 0
+    call emit_corner
+    mov r0, v2
+    mov r1, v3
+    setemit 1
+    call emit_corner
+    mov r0, v4
+    mov r1, v5
+    setemit 2, prim
+    call emit_corner
+    .end
+    end
+.end
+.proc emit_corner
+    mov outpos, r0
+    mov outcolor, constants.yyyy
+    mov outuv.zw, constants.xxxy
+    mov outuv.xy, r1
+    mov outramp.yzw, constants.xxxy
+    mov outramp.x, r1.z
+    mov outfog.yzw, constants.xxxy
+    mov outfog.x, r1.w
+    mov outquat, constants.xxxy
+    mov outview, constants.xxxx
+    emit
+.end

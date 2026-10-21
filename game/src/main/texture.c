@@ -1,3 +1,10 @@
+#include "fh_graphics_options.h"
+#include "fh_pica_hud.h"
+#include "fh_pica_scene.h"
+#include "fh_platform.h"
+#include "fh_pica_scene.h"
+#include "fh_minimal_graphics.h"
+#include "fh_render_floor.h"
 #include "dolphin/os/OSReport.h"
 #include "main/frame_timing.h"
 #include "track/intersect_depth_state.h"
@@ -139,6 +146,16 @@ extern char sTexRestructReRegionedStuckFormat[];
 extern char sTexRestructReRegionedOptimalFormat[];
 extern char sTexRestructFinishedFormat[];
 
+static void fh_file_texture_register(void* owner) {
+    FhTexture image;
+    if (fh_gx_texture_view(textureGetGXTexObj(owner), &image))
+        fh_minimal_texture_asset(owner, &image);
+    if (((Texture*)owner)->imageOffset) {
+        GXTexObj mask;textureInitSecondaryGXTexObj(owner,&mask);
+        if (fh_gx_texture_view(&mask,&image)) fh_minimal_texture_asset(owner,&image);
+    }
+}
+
 void texRestructRefs(int mode)
 {
     u8* na;
@@ -176,6 +193,8 @@ void texRestructRefs(int mode)
                 memcpy(na, tex, size);
                 DCStoreRange(na, size);
                 textureInitGXTexObj((Texture*)na);
+                fh_pica_hud_relocate(tex,na);
+                fh_file_texture_register(na);
                 d = mmSetFreeDelay(0);
                 mm_free(gLoadedTextures[i].texture);
                 mmSetFreeDelay(d);
@@ -225,6 +244,8 @@ void texRestructRefs(int mode)
                         memcpy(na, tex, size);
                         DCStoreRange(na, size);
                         textureInitGXTexObj((Texture*)na);
+                fh_pica_hud_relocate(tex,na);
+                fh_file_texture_register(na);
                         d = mmSetFreeDelay(0);
                         mm_free(gLoadedTextures[i].texture);
                         mmSetFreeDelay(d);
@@ -257,6 +278,8 @@ void texRestructRefs(int mode)
                                 memcpy(na, tex, size);
                                 DCStoreRange(na, size);
                                 textureInitGXTexObj((Texture*)na);
+                fh_pica_hud_relocate(tex,na);
+                fh_file_texture_register(na);
                                 d = mmSetFreeDelay(0);
                                 mm_free(gLoadedTextures[i].texture);
                                 mmSetFreeDelay(d);
@@ -527,6 +550,17 @@ void Rcp_ResetRenderState(void)
 }
 
 
+
+static void fh_pica_hud_texture_unload(Texture *texture){
+    if(!fh_pica_scene_actors)return;
+    const void *owners[256];unsigned count=0;
+    for(Texture *t=texture;t;t=t->nextAnimationFrame){
+        if(count==256)fh_platform_panic("PICA HUD unload chain");
+        owners[count++]=t;
+    }
+    fh_pica_hud_release_many(owners,count);
+}
+
 void textureFree(Texture* tex)
 {
     u8* iter;
@@ -555,6 +589,7 @@ void textureFree(Texture* tex)
         {
             if (gLoadedTextures[i].texture == (u8*)tex)
             {
+                fh_pica_hud_texture_unload(tex);
                 iter = *(u8**)tex;
                 while (iter != NULL)
                 {
@@ -915,6 +950,7 @@ void* textureLoad(int texId, u8 flagIn)
     while (walk != NULL)
     {
         textureInitGXTexObj(walk);
+        fh_file_texture_register(walk);
         walk = walk->nextAnimationFrame;
     }
     if (getLoadedFileFlags(0) != 0 && interruptsDisabled == TRUE)
@@ -965,6 +1001,43 @@ void* textureAlloc(u16 w, u16 h, int fmt, u8 mip, u8 maxLod, u8 wrapS, u8 wrapT,
     ((Texture*)obj)->imageOffset = 0;
     textureInitGXTexObj((Texture*)obj);
     return obj;
+}
+
+
+#include "fh_graphics_options.h"
+
+void fh_pica_game_glow_mask_loaded(void *pointer){
+    if(!(fh_graphics_effects&FH_EFFECT_PARTICLE_REFLECTION) ||
+       (fh_effects_unavailable_mask&FH_EFFECT_PARTICLE_REFLECTION) ||
+       !(fh_graphics_options&FH_GRAPHICS_PARTICLES) ||
+       (fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_PARTICLE_TEX)))return;
+    unsigned frames=0;
+    for(Texture *t=pointer;t;t=t->nextAnimationFrame){
+        if(++frames>256)fh_platform_panic("PICA glow mask animation chain");
+        if(fh_pica_hud_glow_mask_ready(t))continue;
+        FhTexture image;
+        if(!fh_gx_texture_view(textureGetGXTexObj(t),&image) ||
+           !fh_pica_hud_glow_mask_load(t,&image)){
+            fh_graphics_effects_reject(FH_EFFECT_PARTICLE_REFLECTION);return;
+        }
+    }
+}
+
+void fh_pica_game_hud_loaded(void *pointer){
+    if(!fh_pica_scene_actors)return;
+    unsigned frames=0;
+    for(Texture *t=pointer;t;t=t->nextAnimationFrame){
+        if(++frames>256)fh_platform_panic("PICA HUD animation chain");
+        if(fh_pica_hud_find(t))continue;
+        FhTexture image,mask;GXTexObj mask_obj;const FhTexture *secondary=NULL;
+        if(!fh_gx_texture_view(textureGetGXTexObj(t),&image))fh_platform_panic("PICA HUD image descriptor");
+        if(t->imageOffset){
+            textureInitSecondaryGXTexObj(t,&mask_obj);
+            if(!fh_gx_texture_view(&mask_obj,&mask))fh_platform_panic("PICA HUD mask descriptor");
+            secondary=&mask;
+        }
+        fh_pica_hud_load_image(t,&image,secondary);
+    }
 }
 
 void* textureLoadAsset(int asset)

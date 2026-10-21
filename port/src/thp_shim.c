@@ -1,3 +1,8 @@
+#include "fh_graphics_options.h"
+#include "fh_prepared_movie.h"
+#include "fh_movie_lz4.h"
+#include "fh_movie_crc.h"
+#include <zlib.h>
 #include <dolphin/types.h>
 #include <dolphin/thp/THPAudio.h>
 #include <dolphin/thp/THPDecode.h>
@@ -28,9 +33,17 @@ typedef struct THPRGBTexture
 {
     u8* rgba;
     size_t size;
+    unsigned format,width,height;
 } THPRGBTexture;
 
 static THPRGBTexture sRGBTextures[3];
+unsigned fhTHPVideoGetNativeFormat(const void *pixels) {
+    for(unsigned i=0;i<3;i++)if(pixels && pixels==sRGBTextures[i].rgba)return sRGBTextures[i].format;
+    return 0x46;
+}
+void fhTHPVideoGetTextureSize(const void *pixels,unsigned *width,unsigned *height) {
+    for(unsigned i=0;i<3;i++)if(pixels && pixels==sRGBTextures[i].rgba){*width=sRGBTextures[i].width;*height=sRGBTextures[i].height;return;}
+}
 
 static u32 thpReadU32(const void* ptr)
 {
@@ -215,6 +228,51 @@ s32 THPVideoDecode(void* file, void* tileY, void* tileU, void* tileV, void* work
         return 27;
     }
 
+    unsigned nativeFormat=fh_movie_video_format(source,sCompressedFrameSize);
+    if(nativeFormat) {
+        size_t nativeBytes=fh_movie_video_bytes(source,sCompressedFrameSize,
+            gAttractMoviePlayer.videoInfo.xSize,gAttractMoviePlayer.videoInfo.ySize);
+        if(!nativeBytes)return 19;
+#ifdef FOXHOLLOW_N3DS
+        extern void *fh_pica_movie_begin_format(unsigned,unsigned,unsigned,unsigned);
+        extern void fh_pica_movie_commit(void*);
+        unsigned slot=0;
+        while(slot<3 && gAttractMoviePlayer.textureSet[slot].yTexture!=tileY)slot++;
+        if(slot==3)return 6;
+        rgbTexture=sRGBTextures+slot;
+        if(rgbTexture->rgba && rgbTexture->format!=FH_TEXTURE_PICA_ETC1&&rgbTexture->format!=FH_TEXTURE_PICA_RGB8)free(rgbTexture->rgba);
+        rgbTexture->rgba=NULL;rgbTexture->size=0;
+        rgbTexture->format=nativeFormat;
+        /* Decode is a visual consumer. The player still advances its original
+         * frame queue and audio. Hide this slot until a newly decoded frame is
+         * published after re-enable; never expose old pixels as current video.
+         * The PICA owner retains existing allocations and their GPU fences. */
+        if(fh_graphics_options&(FH_GRAPHICS_NO_RENDER|FH_GRAPHICS_NO_ACTORS|FH_GRAPHICS_NO_MOVIES))return 0;
+        rgbTexture->rgba=fh_pica_movie_begin_format(slot,fh_movie_le32(source+8),fh_movie_le32(source+12),nativeFormat);
+        if(!rgbTexture->rgba)return 6;
+#else
+        rgbTexture=thpGetRGBTexture(tileY,nativeBytes);
+        if(!rgbTexture)return 6;
+#endif
+        if(fh_movie_le32(source+28)==2) {
+            if(!fh_movie_lz4_block(rgbTexture->rgba,nativeBytes,source+32,sCompressedFrameSize-36) ||
+                fh_movie_crc32(0,rgbTexture->rgba,nativeBytes)!=fh_movie_le32(source+sCompressedFrameSize-4))return 3;
+        }else if(fh_movie_le32(source+28)) {
+            uLongf outputBytes=nativeBytes;uLong inputBytes=sCompressedFrameSize-32;
+            if(uncompress2(rgbTexture->rgba,&outputBytes,source+32,&inputBytes)!=Z_OK || outputBytes!=nativeBytes || inputBytes!=sCompressedFrameSize-32)return 3;
+        }else memcpy(rgbTexture->rgba,source+32,nativeBytes);
+        rgbTexture->format=nativeFormat;
+        rgbTexture->width=fh_movie_le32(source+8);rgbTexture->height=fh_movie_le32(source+12);
+#ifdef FOXHOLLOW_N3DS
+        fh_pica_movie_commit(rgbTexture->rgba);
+#endif
+        return 0;
+    }
+#ifdef FOXHOLLOW_N3DS
+    /* A prepared stream cannot switch its GPU-owned slots to realloc-backed
+     * JPEG storage. Mixed/corrupt streams fail before touching those owners. */
+    for(unsigned i=0;i<3;i++)if(sRGBTextures[i].format==FH_TEXTURE_PICA_ETC1||sRGBTextures[i].format==FH_TEXTURE_PICA_RGB8)return 19;
+#endif
     sourceSize = thpBuildJpeg(source);
     if (sourceSize == 0)
     {
@@ -233,73 +291,30 @@ s32 THPVideoDecode(void* file, void* tileY, void* tileU, void* tileV, void* work
     jpeg_create_decompress(&info);
     jpeg_mem_src(&info, sJpegFrame, sourceSize);
     jpeg_read_header(&info, TRUE);
-    info.out_color_space = JCS_YCbCr;
+    info.out_color_space = JCS_EXT_RGBA;
     jpeg_start_decompress(&info);
 
     width = info.output_width;
     height = info.output_height;
-    if (info.output_components != 3 || width != gAttractMoviePlayer.videoInfo.xSize ||
+    if (info.output_components != 4 || width != gAttractMoviePlayer.videoInfo.xSize ||
         height != gAttractMoviePlayer.videoInfo.ySize || (width & 15) != 0 || (height & 7) != 0)
     {
         jpeg_destroy_decompress(&info);
         return 19;
     }
 
-    decodedSize = (size_t)width * height * 3;
-    if (decodedSize > sDecodedFrameSize)
-    {
-        u8* resized = realloc(sDecodedFrame, decodedSize);
-        if (resized == NULL)
-        {
-            jpeg_destroy_decompress(&info);
-            return 6;
+    rgbTexture = thpGetRGBTexture(tileY, (size_t)width * height * 4);
+    if (rgbTexture == NULL) { jpeg_destroy_decompress(&info); return 6; }
+    rgbTexture->format=0x46;
+    rgbTexture->width=width;rgbTexture->height=height;
+    while (info.output_scanline < height) {
+        JSAMPROW row = rgbTexture->rgba + (size_t)info.output_scanline * width * 4;
+        if (jpeg_read_scanlines(&info, &row, 1) != 1) {
+            jpeg_destroy_decompress(&info); return 3;
         }
-        sDecodedFrame = resized;
-        sDecodedFrameSize = decodedSize;
-    }
-
-    while (info.output_scanline < height)
-    {
-        JSAMPROW row = sDecodedFrame + (size_t)info.output_scanline * width * 3;
-        jpeg_read_scanlines(&info, &row, 1);
     }
     jpeg_finish_decompress(&info);
     jpeg_destroy_decompress(&info);
-
-    rgbTexture = thpGetRGBTexture(tileY, (size_t)width * height * 4);
-    if (rgbTexture == NULL)
-    {
-        return 6;
-    }
-
-    for (y = 0; y < height; y++)
-    {
-        for (x = 0; x < width; x++)
-        {
-            const u8* yuv = sDecodedFrame + ((size_t)y * width + x) * 3;
-            s32 cb = (s32)yuv[1] - 128;
-            s32 cr = (s32)yuv[2] - 128;
-            u8* rgba = rgbTexture->rgba + ((size_t)y * width + x) * 4;
-
-            ((u8*)tileY)[thpTileOffset(width, x, y)] = yuv[0];
-            rgba[0] = thpClampColor((s32)yuv[0] + ((91881 * cr) >> 16));
-            rgba[1] = thpClampColor((s32)yuv[0] - ((22554 * cb + 46802 * cr) >> 16));
-            rgba[2] = thpClampColor((s32)yuv[0] + ((116130 * cb) >> 16));
-            rgba[3] = 255;
-        }
-    }
-
-    for (y = 0; y < height / 2; y++)
-    {
-        for (x = 0; x < width / 2; x++)
-        {
-            const u8* row0 = sDecodedFrame + ((size_t)y * 2 * width + x * 2) * 3;
-            const u8* row1 = row0 + (size_t)width * 3;
-            size_t offset = thpTileOffset(width / 2, x, y);
-            ((u8*)tileU)[offset] = (u8)((row0[1] + row0[4] + row1[1] + row1[4] + 2) >> 2);
-            ((u8*)tileV)[offset] = (u8)((row0[2] + row0[5] + row1[2] + row1[5] + 2) >> 2);
-        }
-    }
 
     return 0;
 }

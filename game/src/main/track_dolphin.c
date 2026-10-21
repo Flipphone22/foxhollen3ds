@@ -1,4 +1,8 @@
+#include "fh_collision_candidates.h"
+static FhCollisionCandidateStore fh_collision_candidates;
+static const FhCollisionCandidates *fh_collision_candidates_for(const void*,const void*,unsigned,unsigned);
 #include "main/map_block.h"
+#include "fh_collision_view.h"
 #include "main/texture.h"
 #include "track/intersect_depth_state.h"
 #include "track/intersect_depth_read.h"
@@ -152,7 +156,7 @@ int trackGetIntersect2(int mode, void* tri1, void* tri2, f32* startPos, f32* end
 int trackSweepCircleAgainstLines(f32* startPos, f32* endPos, f32 radius, int flags, TrackBBoxHit* hit,
                                  GameObject* target, s8 lineMask, s8 segment, s8 yTolerance, GameObject* sourceObj);
 
-extern u8 gTrackGridOrigin[0x104];
+extern u8 gTrackGridOrigin[0x104] __attribute__((aligned(4)));
 
 TrackBlockDescriptor gTrackBlockDescriptors[20];
 
@@ -2635,6 +2639,33 @@ TrackTriangle* trackBuildModelTriangles(TrackTriangle* cur, TrackBlockDescriptor
 
 /* trackBuildBlockTriangles -- gather map-block collision triangles overlapping
  * the query box into the buffer at cur; returns advanced cursor. */
+static inline __attribute__((always_inline)) void fh_collision_PSVECSubtract(const Vec* a, const Vec* b, Vec* a_b) {
+  a_b->x = a->x - b->x;
+  a_b->y = a->y - b->y;
+  a_b->z = a->z - b->z;
+}
+static inline __attribute__((always_inline)) void fh_collision_PSVECScale(const Vec* src, Vec* dst, f32 scale) {
+  dst->x = (src->x * scale);
+  dst->y = (src->y * scale);
+  dst->z = (src->z * scale);
+}
+static inline __attribute__((always_inline)) void fh_collision_PSVECCrossProduct(const Vec* a, const Vec* b, Vec* axb) {
+  Vec vTmp;
+
+
+  vTmp.x = (a->y * b->z) - (a->z * b->y);
+  vTmp.y = (a->z * b->x) - (a->x * b->z);
+  vTmp.z = (a->x * b->y) - (a->y * b->x);
+  axb->x = vTmp.x;
+  axb->y = vTmp.y;
+  axb->z = vTmp.z;
+}
+static inline __attribute__((always_inline)) f32 fh_collision_PSVECDotProduct(const Vec* a, const Vec* b) {
+  f32 dot;
+
+  dot = (a->z * b->z) + ((a->x * b->x) + (a->y * b->y));
+  return dot;
+}
 TrackTriangle* trackBuildBlockTriangles(TrackTriangle* cur, int x0, int y0, int z0, int x1, int y1, int z1, int flags,
                                         u8 doEdges) {
     MapBlockData* cells[16];
@@ -2720,8 +2751,8 @@ TrackTriangle* trackBuildBlockTriangles(TrackTriangle* cur, int x0, int y0, int 
         void* p = mapBlockGetPolygon(c0, 0);
         dmaflip = 0;
         offA = 0;
-        cacheAllocAndCopy((u8*)p, c0->nPolygons << 3, &offA, &offB, 0x2000);
-        cacheAllocAndCopy((u8*)c0->vertices, c0->vertexCount * 6, &offB, &offC, 0x2000);
+        fh_collision_source_view((u8*)p, c0->nPolygons << 3, &offA, &offB, 0x2000);
+        fh_collision_source_view((u8*)c0->vertices, c0->vertexCount * 6, &offB, &offC, 0x2000);
     }
     i = 0;
     firstp = (int*)gTrackGridOrigin;
@@ -2755,8 +2786,8 @@ TrackTriangle* trackBuildBlockTriangles(TrackTriangle* cur, int x0, int y0, int 
             nextBase = dmaflip + 0x2000;
             p = mapBlockGetPolygon(next, 0);
             offA = dmaflip;
-            c13 = cacheAllocAndCopy((u8*)p, next->nPolygons << 3, &offA, &offB, nextBase);
-            c14 = cacheAllocAndCopy((u8*)next->vertices, next->vertexCount * 6, &offB, &offC, nextBase);
+            c13 = fh_collision_source_view((u8*)p, next->nPolygons << 3, &offA, &offB, nextBase);
+            c14 = fh_collision_source_view((u8*)next->vertices, next->vertexCount * 6, &offB, &offC, nextBase);
             cacheQueueWait((u8)(c13 + c14));
         } else {
             cacheQueueWait(0);
@@ -2802,6 +2833,7 @@ TrackTriangle* trackBuildBlockTriangles(TrackTriangle* cur, int x0, int y0, int 
         tri = tri0;
         triEnd = tri0 + blk->polyGroupCount * 0x14;
         mask16 = mask;
+        const FhCollisionCandidates *fh_candidates=fh_collision_candidates_for(blk,(const void*)bb,blk->nPolygons,(unsigned)mask16);
         for (; tri < triEnd; tri += 0x14) {
             u32 tf = ((MapTriGroup*)tri)->flags;
             int t0;
@@ -2856,11 +2888,11 @@ TrackTriangle* trackBuildBlockTriangles(TrackTriangle* cur, int x0, int y0, int 
             t0 = ((MapTriGroup*)tri)->firstTri;
             vq = (u8*)(uintptr_t)(bb + t0 * 8);
             vEnd = ((MapTriGroup*)tri)[1].firstTri;
-            for (; t0 < vEnd; t0++, vq += 8) {
-                s16* vp;
+            unsigned fh_at=fh_candidates?fh_collision_candidates_lower(fh_candidates,(unsigned)t0):0;
+            if(fh_candidates)t0=fh_at<fh_candidates->length?fh_candidates->indices[fh_at++]:vEnd;
+            for (; t0 < vEnd; t0=fh_candidates?(fh_at<fh_candidates->length?fh_candidates->indices[fh_at++]:vEnd):t0+1) {
+                vq=(u8*)(uintptr_t)(bb+t0*8);
                 u8 maxYi, minYi;
-                u16* tw;
-                int minX, maxX, minY, maxY, minZ, maxZ;
                 int j;
                 f32 mag;
 
@@ -2870,82 +2902,46 @@ TrackTriangle* trackBuildBlockTriangles(TrackTriangle* cur, int x0, int y0, int 
                 if ((mask16 & ((MapTriIndex*)vq)->cellMask & 0xff00) == 0) {
                     continue;
                 }
-                vp = (s16*)(uintptr_t)(vb + ((MapTriIndex*)vq)->vert[0] * 6);
-                minX = vp[0] >> 3;
-                maxX = minX;
-                minY = (vp[1] >> 3) + blk->collisionYOffset;
-                maxY = minY;
-                minZ = vp[2] >> 3;
-                maxZ = minZ;
-                cur->vx[0] = minX + dxoff;
-                cur->vy[0] = minY;
-                cur->vz[0] = minZ + dzoff;
-                vertices[0][0] = __OSs16tof32(&cur->vx[0]);
-                vertices[0][1] = __OSs16tof32(&cur->vy[0]);
-                vertices[0][2] = __OSs16tof32(&cur->vz[0]);
-                maxYi = 0;
-                minYi = 0;
-                j = 1;
-                tw = &((MapTriIndex*)vq)->vert[1];
-                for (; j < 3; j++) {
-                    int x, yy, z;
-                    vp = (s16*)(uintptr_t)(vb + *tw * 6);
-                    x = vp[0] >> 3;
-                    yy = blk->collisionYOffset + (vp[1] >> 3);
-                    z = vp[2] >> 3;
-                    if (x > maxX) {
-                        maxX = x;
-                    } else if (x < minX) {
-                        minX = x;
-                    }
-                    if (yy > maxY) {
-                        maxY = yy;
-                        maxYi = j;
-                    } else if (yy < minY) {
-                        minY = yy;
-                        minYi = j;
-                    }
-                    if (z > maxZ) {
-                        maxZ = z;
-                    } else if (z < minZ) {
-                        minZ = z;
-                    }
-                    cur->vx[j] = x + dxoff;
-                    cur->vy[j] = yy;
-                    cur->vz[j] = z + dzoff;
-                    vertices[j][0] = __OSs16tof32(&cur->vx[j]);
-                    vertices[j][1] = __OSs16tof32(&cur->vy[j]);
-                    vertices[j][2] = __OSs16tof32(&cur->vz[j]);
-                    tw++;
-                }
-                if (minY > y1) {
-                    continue;
-                }
-                if (maxY < y0) {
-                    continue;
-                }
-                if (minX > relx1) {
-                    continue;
-                }
-                if (maxX < relx0) {
-                    continue;
-                }
-                if (minZ > relz1) {
-                    continue;
-                }
-                if (maxZ < relz0) {
-                    continue;
+                /* Native broadphase: identical integer bounds, before float
+                 * conversion/output construction. Do not retain geometry across
+                 * calls: map vertices, offsets, indices and flags can change.
+                 * Only records before returned cur belong to the caller. */
+                const s16 *p0=(const s16*)(uintptr_t)(vb+((MapTriIndex*)vq)->vert[0]*6);
+                const s16 *p1=(const s16*)(uintptr_t)(vb+((MapTriIndex*)vq)->vert[1]*6);
+                const s16 *p2=(const s16*)(uintptr_t)(vb+((MapTriIndex*)vq)->vert[2]*6);
+                int ax=p0[0]>>3, bx=p1[0]>>3, cx=p2[0]>>3;
+                if ((ax<relx0 && bx<relx0 && cx<relx0) ||
+                    (ax>relx1 && bx>relx1 && cx>relx1)) continue;
+                int ay=(p0[1]>>3)+blk->collisionYOffset;
+                int by=(p1[1]>>3)+blk->collisionYOffset;
+                int cy=(p2[1]>>3)+blk->collisionYOffset;
+                if ((ay<y0 && by<y0 && cy<y0) ||
+                    (ay>y1 && by>y1 && cy>y1)) continue;
+                int az=p0[2]>>3, bz=p1[2]>>3, cz=p2[2]>>3;
+                if ((az<relz0 && bz<relz0 && cz<relz0) ||
+                    (az>relz1 && bz>relz1 && cz>relz1)) continue;
+                maxYi=0;minYi=0;
+                if(by>ay)maxYi=1;else if(by<ay)minYi=1;
+                if(cy>(maxYi?by:ay))maxYi=2;
+                else if(cy<(minYi?by:ay))minYi=2;
+                cur->vx[0]=ax+dxoff;cur->vx[1]=bx+dxoff;cur->vx[2]=cx+dxoff;
+                cur->vy[0]=ay;cur->vy[1]=by;cur->vy[2]=cy;
+                cur->vz[0]=az+dzoff;cur->vz[1]=bz+dzoff;cur->vz[2]=cz+dzoff;
+                for(j=0;j<3;j++){
+                    vertices[j][0]=__OSs16tof32(&cur->vx[j]);
+                    vertices[j][1]=__OSs16tof32(&cur->vy[j]);
+                    vertices[j][2]=__OSs16tof32(&cur->vz[j]);
                 }
 
-                PSVECSubtract((Vec*)vertices[0], (Vec*)vertices[1], (Vec*)edges[0]);
-                PSVECSubtract((Vec*)vertices[1], (Vec*)vertices[2], (Vec*)edges[1]);
-                PSVECCrossProduct((Vec*)edges[0], (Vec*)edges[1], (Vec*)cur->planeN);
+                fh_collision_PSVECSubtract((Vec*)vertices[0], (Vec*)vertices[1], (Vec*)edges[0]);
+                fh_collision_PSVECSubtract((Vec*)vertices[1], (Vec*)vertices[2], (Vec*)edges[1]);
+                fh_collision_PSVECCrossProduct((Vec*)edges[0], (Vec*)edges[1], (Vec*)cur->planeN);
                 mag = PSVECMag((Vec*)cur->planeN);
                 if (!(mag > 0.0f)) {
                     continue;
                 }
                 mag = 1.0f / mag;
-                PSVECScale((Vec*)cur->planeN, (Vec*)cur->planeN, mag);
+                fh_collision_PSVECScale((Vec*)cur->planeN, (Vec*)cur->planeN, mag);
                 if (f8) {
                     if (cur->planeN[1] >= 0.707f || cur->planeN[1] <= -0.707f) {
                         if (type != 4) {
@@ -2961,12 +2957,12 @@ TrackTriangle* trackBuildBlockTriangles(TrackTriangle* cur, int x0, int y0, int 
                         continue;
                     }
                 }
-                cur->planeD = -PSVECDotProduct((Vec*)cur->planeN, (Vec*)vertices[0]);
+                cur->planeD = -fh_collision_PSVECDotProduct((Vec*)cur->planeN, (Vec*)vertices[0]);
                 if (doEdges) {
                     int k22, deg, j2;
                     f32* ep;
                     f32 one, eps;
-                    PSVECSubtract((Vec*)vertices[2], (Vec*)vertices[0], (Vec*)edges[2]);
+                    fh_collision_PSVECSubtract((Vec*)vertices[2], (Vec*)vertices[0], (Vec*)edges[2]);
                     k22 = 0;
                     deg = 0;
                     j2 = 0;
@@ -2975,11 +2971,11 @@ TrackTriangle* trackBuildBlockTriangles(TrackTriangle* cur, int x0, int y0, int 
                     one = 1.0f;
                     do {
                         f32 m;
-                        PSVECCrossProduct((Vec*)cur->planeN, (Vec*)ep, (Vec*)en);
+                        fh_collision_PSVECCrossProduct((Vec*)cur->planeN, (Vec*)ep, (Vec*)en);
                         m = PSVECMag((Vec*)en);
                         if (m > eps) {
                             m = one / m;
-                            PSVECScale((Vec*)en, (Vec*)en, m);
+                            fh_collision_PSVECScale((Vec*)en, (Vec*)en, m);
                             cur->edgeN0[k22++] = en[0];
                             cur->edgeN0[k22++] = en[1];
                             cur->edgeN0[k22++] = en[2];
@@ -3232,4 +3228,346 @@ void trackInitCollisionBuffers(void) {
     gIntersectRebuildRequested = 0;
 }
 
-u8 gTrackGridOrigin[0x104];
+u8 gTrackGridOrigin[0x104] __attribute__((aligned(4)));
+_Static_assert(__alignof__(gTrackGridOrigin)>=4,"ARM collision grid origin alignment");
+
+#include "fh_ground_receiver.h"
+#include "fh_ground_mask.h"
+#include "fh_ground_result.h"
+#include "fh_platform.h"
+#include <stdio.h>
+static FhGroundCache fh_shadow_receiver_cache;
+static FhGroundMaskStore fh_shadow_mask_store;
+static FhGroundResults fh_shadow_results={.generation=1};
+void fh_native_ground_changed(void){fh_ground_results_changed(&fh_shadow_results);}
+void fh_native_ground_mask_load(const void*owner,const void*source,unsigned count){fh_collision_candidates_clear(&fh_collision_candidates);fh_native_ground_changed();fh_ground_mask_load(&fh_shadow_mask_store,owner,source,count);}
+void fh_native_ground_mask_forget(const void*owner,unsigned bytes){fh_collision_candidates_clear(&fh_collision_candidates);fh_native_ground_changed();fh_ground_mask_forget(&fh_shadow_mask_store,owner,bytes);}
+static uint64_t fh_shadow_receiver_ticks,fh_shadow_receiver_max_ticks;
+static void fh_shadow_receiver_world(FhGroundQuery *query, int x0,int y0,int z0,int x1,int y1,int z1) {
+    FhGroundResultKey fh_result_key={0};
+    TrackTriangle scratch,*cur=&scratch;
+    int private_origins[65]={0};
+    const int flags=0;
+    MapBlockData* cells[16];
+    f32 edges[3][3];
+    f32 vertices[3][3];
+    f32 en[3];
+    uintptr_t offA;
+    int* firstp;
+    int last;
+    int mask16;
+    int f40, f80, f200, f120, f20, f8, f100, f4;
+    int gx0, gz0, gx1, gz1;
+    uintptr_t offB;
+    MapBlockData **cellp, **cw;
+    int gx, gz;
+    int count, layer;
+    int *descp, *dw;
+    uintptr_t offC;
+    int relx0, relz0, relx1, relz1;
+    int i;
+    int vEnd;
+    u8* triEnd;
+    u8 typeb;
+    uintptr_t bb;
+    u32 dmaflip;
+    MapBlockData** p1;
+    int* q1;
+    MapBlockData** p2;
+    int* q2;
+
+    x0 = x0 - gMapBlockOriginWorldX;
+    z0 = z0 - gMapBlockOriginWorldZ;
+    x1 = x1 - gMapBlockOriginWorldX;
+    z1 = z1 - gMapBlockOriginWorldZ;
+    if (x0 > x1) {
+        x0 ^= x1;
+        x1 ^= x0;
+        x0 ^= x1;
+    }
+    if (z0 > z1) {
+        z0 ^= z1;
+        z1 ^= z0;
+        z0 ^= z1;
+    }
+    gx0 = fastFloorf((f32)x0 / 640.0f);
+    gz0 = fastFloorf((f32)z0 / 640.0f);
+    gx1 = fastFloorf((f32)x1 / 640.0f);
+    gz1 = fastFloorf((f32)z1 / 640.0f);
+
+    count = 0;
+    layer = 0;
+    cellp = cells;
+    cw = cellp;
+    descp = (int*)private_origins;
+    dw = descp;
+    do {
+        for (gx = gx0, p1 = cw, q1 = dw; gx <= gx1 && count < 16; gx++) {
+            for (gz = gz0, p2 = p1, q2 = q1; gz <= gz1 && count < 16; gz++) {
+                MapBlockData* blk = mapGetBlockAtPos(gx, gz, layer);
+                if (blk != NULL) {
+                    *p2 = blk;
+                    q2[0] = gx * 0x280;
+                    q2[2] = gz * 0x280;
+                    p2++;
+                    q2 += 3;
+                    p1++;
+                    q1 += 3;
+                    cw++;
+                    dw += 3;
+                    count++;
+                }
+            }
+        }
+        layer++;
+    } while (layer < 5);
+
+    if (count == 0) {
+        {fh_ground_result_put(&fh_shadow_results,&fh_result_key,query);return;}
+    }
+
+    fh_result_key.position[0]=query->x;fh_result_key.position[1]=query->y;fh_result_key.position[2]=query->z;
+    fh_result_key.origin[0]=gMapBlockOriginWorldX;fh_result_key.origin[1]=gMapBlockOriginWorldZ;
+    fh_result_key.count=count;fh_result_key.generation=fh_shadow_results.generation;
+    for(unsigned n=0;n<(unsigned)count;n++){
+        fh_result_key.cells[n]=(uintptr_t)cells[n];
+        fh_result_key.grid[n][0]=private_origins[n*3];fh_result_key.grid[n][1]=private_origins[n*3+2];
+    }
+    if(fh_ground_result_get(&fh_shadow_results,&fh_result_key,query))return;
+    {
+        MapBlockData* c0 = cells[0];
+        void* p = mapBlockGetPolygon(c0, 0);
+        dmaflip = 0;
+        offA = 0;
+        fh_collision_source_view((u8*)p, c0->nPolygons << 3, &offA, &offB, 0x2000);
+        fh_collision_source_view((u8*)c0->vertices, c0->vertexCount * 6, &offB, &offC, 0x2000);
+    }
+    i = 0;
+    firstp = (int*)private_origins;
+    f40 = (u16)flags & 0x40;
+    f80 = (u16)flags & 0x80;
+    f200 = (u16)flags & 0x200;
+    f120 = (u16)flags & 0x120;
+    f20 = (u16)flags & 0x20;
+    f8 = (u16)flags & 8;
+    f100 = (u16)flags & 0x100;
+    f4 = (u16)flags & 4;
+    last = count - 1;
+    for (; i < count; i++) {
+        MapBlockData* blk;
+        uintptr_t vb;
+        u8* tri;
+        s16 mask;
+        s16 bit;
+        int pos;
+        int dxoff, dzoff;
+        u8* tri0;
+
+        bb = offA;
+        vb = offB;
+        if (i < last) {
+            MapBlockData* next = cellp[1];
+            u32 nextBase;
+            void* p;
+            int c13, c14;
+            dmaflip ^= 0x2000;
+            nextBase = dmaflip + 0x2000;
+            p = mapBlockGetPolygon(next, 0);
+            offA = dmaflip;
+            c13 = fh_collision_source_view((u8*)p, next->nPolygons << 3, &offA, &offB, nextBase);
+            c14 = fh_collision_source_view((u8*)next->vertices, next->vertexCount * 6, &offB, &offC, nextBase);
+            (void)c13;(void)c14;
+        } else {
+            
+        }
+
+        blk = *cellp;
+        const FhGroundMaskIndex *fh_mask_index=fh_ground_mask_find(&fh_shadow_mask_store,blk,(const void*)bb,blk->nPolygons);
+        relx0 = x0 - descp[0];
+        relx1 = x1 - descp[0];
+        relz0 = z0 - descp[2];
+        relz1 = z1 - descp[2];
+        descp[0] = descp[0] + gMapBlockOriginWorldX;
+        descp[2] = descp[2] + gMapBlockOriginWorldZ;
+        if (relx0 < 0) {
+            relx0 = 0;
+        }
+        if (relx1 > 0x280) {
+            relx1 = 0x280;
+        }
+        if (relz0 < 0) {
+            relz0 = 0;
+        }
+        if (relz1 > 0x280) {
+            relz1 = 0x280;
+        }
+        dxoff = descp[0] - firstp[0];
+        dzoff = descp[2] - firstp[2];
+
+        mask = 0;
+        bit = 1;
+        for (pos = 0; pos != 0x280; pos += 0x50) {
+            if (relx0 <= pos + 0x50 && relx1 >= pos) {
+                mask |= bit;
+            }
+            bit = bit << 1;
+        }
+        for (pos = 0; pos != 0x280; pos += 0x50) {
+            if (relz0 <= pos + 0x50 && relz1 >= pos) {
+                mask |= bit;
+            }
+            bit = bit << 1;
+        }
+        tri0 = blk->polygonGroups;
+        tri = tri0;
+        triEnd = tri0 + blk->polyGroupCount * 0x14;
+        mask16 = mask;
+        for (; tri < triEnd; tri += 0x14) {
+            u32 tf = ((MapTriGroup*)tri)->flags;
+            int t0;
+            u8 type;
+            u8* vq;
+
+            if ((tf & 0x10) && f40) {
+                continue;
+            }
+            if (!(tf & 4) && f80) {
+                continue;
+            }
+            if (tf & 8) {
+                if (tf & 1) {
+                    continue;
+                }
+                if (f200) {
+                    continue;
+                }
+                type = 4;
+                if (f120 == 0) {
+                    type |= 0x10;
+                }
+            } else {
+                if ((tf & 2) && f20 == 0) {
+                    continue;
+                }
+                type = 2;
+            }
+            if (((MapTriGroup*)tri)->minY + blk->collisionYOffset > y1) {
+                continue;
+            }
+            if (((MapTriGroup*)tri)->maxY + blk->collisionYOffset < y0) {
+                continue;
+            }
+            if (((MapTriGroup*)tri)->minX > relx1) {
+                continue;
+            }
+            if (((MapTriGroup*)tri)->maxX < relx0) {
+                continue;
+            }
+            if (((MapTriGroup*)tri)->minZ > relz1) {
+                continue;
+            }
+            if (((MapTriGroup*)tri)->maxZ < relz0) {
+                continue;
+            }
+            if (tf & 4) {
+                type |= 8;
+            }
+            typeb = trackGetPackedSurfaceType((int*)tri);
+            t0 = ((MapTriGroup*)tri)->firstTri;
+            vq = (u8*)(uintptr_t)(bb + t0 * 8);
+            vEnd = ((MapTriGroup*)tri)[1].firstTri;
+            FhGroundMaskCursor fh_mask_cursor;
+            fh_ground_mask_begin(&fh_mask_cursor,fh_mask_index,t0,vEnd,(unsigned)mask16);
+            for(t0=fh_ground_mask_next(&fh_mask_cursor);t0<vEnd;t0=fh_ground_mask_next(&fh_mask_cursor)){
+                vq=(u8*)(bb+t0*8);
+                u8 maxYi, minYi;
+                int j;
+                f32 mag;
+
+                if ((mask16 & ((MapTriIndex*)vq)->cellMask & 0xff) == 0) {
+                    continue;
+                }
+                if ((mask16 & ((MapTriIndex*)vq)->cellMask & 0xff00) == 0) {
+                    continue;
+                }
+                /* Native broadphase: identical integer bounds, before float
+                 * conversion/output construction. Do not retain geometry across
+                 * calls: map vertices, offsets, indices and flags can change.
+                 * Only records before returned cur belong to the caller. */
+                const s16 *p0=(const s16*)(uintptr_t)(vb+((MapTriIndex*)vq)->vert[0]*6);
+                const s16 *p1=(const s16*)(uintptr_t)(vb+((MapTriIndex*)vq)->vert[1]*6);
+                const s16 *p2=(const s16*)(uintptr_t)(vb+((MapTriIndex*)vq)->vert[2]*6);
+                int ax=p0[0]>>3, bx=p1[0]>>3, cx=p2[0]>>3;
+                if ((ax<relx0 && bx<relx0 && cx<relx0) ||
+                    (ax>relx1 && bx>relx1 && cx>relx1)) continue;
+                int ay=(p0[1]>>3)+blk->collisionYOffset;
+                int by=(p1[1]>>3)+blk->collisionYOffset;
+                int cy=(p2[1]>>3)+blk->collisionYOffset;
+                if ((ay<y0 && by<y0 && cy<y0) ||
+                    (ay>y1 && by>y1 && cy>y1)) continue;
+                int az=p0[2]>>3, bz=p1[2]>>3, cz=p2[2]>>3;
+                if ((az<relz0 && bz<relz0 && cz<relz0) ||
+                    (az>relz1 && bz>relz1 && cz>relz1)) continue;
+                maxYi=0;minYi=0;
+                if(by>ay)maxYi=1;else if(by<ay)minYi=1;
+                if(cy>(maxYi?by:ay))maxYi=2;
+                else if(cy<(minYi?by:ay))minYi=2;
+                cur->vx[0]=ax+dxoff;cur->vx[1]=bx+dxoff;cur->vx[2]=cx+dxoff;
+                cur->vy[0]=ay;cur->vy[1]=by;cur->vy[2]=cy;
+                cur->vz[0]=az+dzoff;cur->vz[1]=bz+dzoff;cur->vz[2]=cz+dzoff;
+                int16_t key[9];
+                for(unsigned vertex=0;vertex<3;vertex++){
+                    key[vertex*3]=cur->vx[vertex];key[vertex*3+1]=cur->vy[vertex];key[vertex*3+2]=cur->vz[vertex];
+                }
+                if(fh_ground_consider(&fh_shadow_receiver_cache,query,key,firstp[0],firstp[2])){fh_ground_result_put(&fh_shadow_results,&fh_result_key,query);return;}
+
+            }
+        }
+        cellp++;
+        descp += 3;
+    }
+    {fh_ground_result_put(&fh_shadow_results,&fh_result_key,query);return;}
+    fh_ground_result_put(&fh_shadow_results,&fh_result_key,query);
+}
+int fh_native_ground_receiver(float x,float y,float z,float *offset,float normal[3]){
+    uint64_t started=fh_platform_ticks();
+    FhGroundQuery query={.x=x,.y=y,.z=z};fh_shadow_receiver_cache.queries++;
+    fh_shadow_receiver_world(&query,(int)x-5,(int)(y-10000.f)-5,(int)z-5,
+        (int)x+5,(int)(10000.f+y)+5,(int)z+5);
+    uint64_t elapsed=fh_platform_ticks()-started;fh_shadow_receiver_ticks+=elapsed;
+    if(elapsed>fh_shadow_receiver_max_ticks)fh_shadow_receiver_max_ticks=elapsed;
+    *offset=0;
+    if(!query.hits)return 1;
+    *offset=y-query.best_height;
+    for(unsigned i=0;i<3;i++)normal[i]=query.normal[i];
+    return 0;
+}
+void fh_native_ground_receiver_report(void){
+    char line[256];
+    snprintf(line,sizeof(line),"Native collision candidates: hits=%u misses=%u overflow=%u bytes=%u\n",
+        fh_collision_candidates.hits,fh_collision_candidates.misses,fh_collision_candidates.overflow,(unsigned)sizeof(fh_collision_candidates));
+    fh_platform_log(line);fh_collision_candidates_clear(&fh_collision_candidates);
+    snprintf(line,sizeof(line),"PICA shadow result reuse: hits=%llu misses=%llu invalidations=%llu bytes=%u slots=%u\n",
+        (unsigned long long)fh_shadow_results.hits,(unsigned long long)fh_shadow_results.misses,
+        (unsigned long long)fh_shadow_results.invalidations,(unsigned)sizeof(fh_shadow_results),FH_GROUND_RESULTS);
+    fh_platform_log(line);
+    snprintf(line,sizeof(line),"PICA shadow mask index: bytes=%u peak=%u cap=%u builds=%u declined=%u releases=%u hits=%u misses=%u metadata=%u\n",
+        fh_shadow_mask_store.bytes,fh_shadow_mask_store.peak,FH_GROUND_MASK_BUDGET,fh_shadow_mask_store.builds,
+        fh_shadow_mask_store.declined,fh_shadow_mask_store.releases,fh_shadow_mask_store.hits,fh_shadow_mask_store.misses,(unsigned)sizeof(fh_shadow_mask_store));
+    fh_platform_log(line);
+    for(unsigned i=0;i<FH_GROUND_MASK_OWNERS;i++)if(fh_shadow_mask_store.index[i].owner)
+        fh_ground_mask_forget(&fh_shadow_mask_store,fh_shadow_mask_store.index[i].owner,1);
+    snprintf(line,sizeof(line),"PICA shadow receivers: queries=%llu lookups=%llu hits=%llu triangles=%llu receivers=%llu cpu_bytes=%u worker=0\n",
+        (unsigned long long)fh_shadow_receiver_cache.queries,(unsigned long long)fh_shadow_receiver_cache.lookups,
+        (unsigned long long)fh_shadow_receiver_cache.hits,(unsigned long long)fh_shadow_receiver_cache.triangles,
+        (unsigned long long)fh_shadow_receiver_cache.receivers,(unsigned)sizeof(fh_shadow_receiver_cache));
+    fh_platform_log(line);
+    snprintf(line,sizeof(line),"PICA shadow receiver timing: total_ms=%.6f mean_us=%.6f max_us=%.6f ticks_hz=40500000\n",
+        fh_shadow_receiver_ticks/40500.0,
+        fh_shadow_receiver_cache.queries?fh_shadow_receiver_ticks/(40.5*fh_shadow_receiver_cache.queries):0.0,
+        fh_shadow_receiver_max_ticks/40.5);fh_platform_log(line);
+}
+
+static const FhCollisionCandidates *fh_collision_candidates_for(const void*owner,const void*source,unsigned count,unsigned mask){
+    return fh_collision_candidates_get(&fh_collision_candidates,&fh_shadow_mask_store,owner,source,count,mask);
+}
